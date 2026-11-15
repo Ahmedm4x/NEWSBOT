@@ -5,6 +5,7 @@ Polls Shafaq News RSS feeds and sends every new article to your Telegram chat.
 import html
 import json
 import os
+import re
 import time
 import xml.etree.ElementTree as ET
 
@@ -41,6 +42,31 @@ def save_seen(seen):
         json.dump(list(seen)[-2000:], f, ensure_ascii=False)
 
 
+def clean_text(raw):
+    """Turn the feed's HTML description into plain text."""
+    text = re.sub(r"<br\s*/?>|</p>", "\n", raw, flags=re.I)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = html.unescape(text)
+    lines = [l.strip() for l in text.splitlines()]
+    lines = [l for l in lines if l and not l.lower().startswith(("read more", "اقرأ أيضا", "اقرأ ايضا"))]
+    return "\n\n".join(lines)
+
+
+def build_text(item, limit):
+    head = f"<b>{html.escape(item['title'])}</b>"
+    tail = ""
+    if item["category"]:
+        tail += f"\n\n#{html.escape(item['category'].replace(' ', '_'))}"
+    tail += f"\n{html.escape(item['link'])}"
+    summary = item.get("summary", "")
+    room = limit - len(head) - len(tail) - 10
+    if summary and room > 50:
+        if len(html.escape(summary)) > room:
+            summary = summary[:room - 20].rsplit(" ", 1)[0] + "..."
+        return f"{head}\n\n{html.escape(summary)}{tail}"
+    return head + tail
+
+
 def fetch_items(feed_url):
     r = requests.get(feed_url, headers=HEADERS, timeout=20)
     r.raise_for_status()
@@ -51,31 +77,31 @@ def fetch_items(feed_url):
         guid = (it.findtext("guid") or link).strip()
         title = (it.findtext("title") or "").strip()
         category = (it.findtext("category") or "").strip()
+        desc = (it.findtext("description")
+                or it.findtext("{http://purl.org/rss/1.0/modules/content/}encoded") or "")
         enc = it.find("enclosure")
         image = enc.get("url") if enc is not None else None
         if guid:
             items.append({"id": guid, "link": link, "title": title,
-                          "category": category, "image": image})
+                          "category": category, "image": image,
+                          "summary": clean_text(desc)})
     items.reverse()  # oldest first, so messages arrive in order
     return items
 
 
 def send(item):
-    text = f"<b>{html.escape(item['title'])}</b>"
-    if item["category"]:
-        text += f"\n#{html.escape(item['category'].replace(' ', '_'))}"
-    text += f"\n\n{html.escape(item['link'])}"
-
     api = f"https://api.telegram.org/bot{BOT_TOKEN}"
     if item["image"]:
+        # photo captions are limited to 1024 characters
         r = requests.post(f"{api}/sendPhoto", timeout=20, data={
             "chat_id": CHAT_ID, "photo": item["image"],
-            "caption": text, "parse_mode": "HTML"})
+            "caption": build_text(item, 1024), "parse_mode": "HTML"})
         if r.ok:
             return
-    # no image, or the image failed: send plain text
+    # no image, or the image failed: send plain text (up to 4096 characters)
     r = requests.post(f"{api}/sendMessage", timeout=20, data={
-        "chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"})
+        "chat_id": CHAT_ID, "text": build_text(item, 4096), "parse_mode": "HTML",
+        "disable_web_page_preview": "true"})
     if r.status_code == 429:  # Telegram rate limit
         wait = r.json().get("parameters", {}).get("retry_after", 5)
         time.sleep(wait)
@@ -93,6 +119,7 @@ def check_once(seen, first_run):
                 seen.add(item["id"])
                 if not first_run:  # first run: just remember current news, don't spam
                     send(item)
+                    print(f"Sent: {item['title']} (text: {len(item['summary'])} chars)")
                     time.sleep(1.5)
         except Exception as e:
             print(f"Error with {feed}: {e}")
