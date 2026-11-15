@@ -2,7 +2,7 @@ name: Shafaq News Bot
 
 on:
   schedule:
-    - cron: "*/5 * * * *"   # every 5 minutes (GitHub may delay it a bit)
+    - cron: "3-58/5 * * * *"  # every 5 minutes, offset from :00 (GitHub may delay it a bit)
   workflow_dispatch:         # lets you run it manually from the Actions tab
 
 permissions:
