@@ -46,7 +46,8 @@ function isBreaking(title, categories, rawBody) {
 }
 const SEND_PER_RUN = 40;
 // Free Cloudflare AI models for captions, tried in order
-const CAPTION_MODELS = ["@cf/google/gemma-4-26b-a4b-it", "@cf/zai-org/glm-4.7-flash"]; // Cloudflare free plan allows 50 outgoing requests per run
+const CAPTION_MODELS = ["@cf/google/gemma-4-26b-a4b-it", "@cf/zai-org/glm-4.7-flash"];
+const CAPTIONS_PER_USER_PER_DAY = 30; // safety limit for everyone except the admin // Cloudflare free plan allows 50 outgoing requests per run
 const LANG_NAMES = { ar: "العربية", en: "English", both: "العربية + English" };
 
 // ---------------- helpers ----------------
@@ -133,6 +134,7 @@ async function setupDb(env) {
     env.DB.prepare("CREATE TABLE IF NOT EXISTS outbox (n INTEGER PRIMARY KEY AUTOINCREMENT, chat_id TEXT, item TEXT, created INTEGER)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS breaking_log (id TEXT PRIMARY KEY, title TEXT, ts INTEGER)"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS caption_use (chat_id TEXT, day TEXT, n INTEGER, PRIMARY KEY (chat_id, day))"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS articles (h TEXT PRIMARY KEY, title TEXT, summary TEXT, lang TEXT, ts INTEGER)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS delay_log (id TEXT PRIMARY KEY, title TEXT, pub INTEGER, found INTEGER, sent INTEGER)"),
   ]);
@@ -233,7 +235,7 @@ function buildText(item, limit) {
 
 async function sendArticle(env, chatId, item) {
   const silent = !(item.breaking || item.hits?.length);
-  const captionRow = item.lang === "en" && env.ADMIN_ID && String(chatId) === String(env.ADMIN_ID)
+  const captionRow = item.lang === "en"
     ? [[{ text: "✍️ Caption", callback_data: "cap:" + shortHash(item.id) }]] : [];
   const reply_markup = {
     inline_keyboard: [[
@@ -586,8 +588,18 @@ async function handleCallback(env, cq) {
   let toast = "✅";
 
   if (data.startsWith("cap:")) {
-    if (!env.ADMIN_ID || chatId !== String(env.ADMIN_ID)) {
-      return tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text: "Not available" });
+    const isAdmin = env.ADMIN_ID && chatId === String(env.ADMIN_ID);
+    if (!isAdmin) {
+      const day = new Date().toISOString().slice(0, 10);
+      const row = await env.DB.prepare("SELECT n FROM caption_use WHERE chat_id = ? AND day = ?").bind(chatId, day).first();
+      if (row && row.n >= CAPTIONS_PER_USER_PER_DAY) {
+        return tg(env, "answerCallbackQuery", { callback_query_id: cq.id, show_alert: true,
+          text: `You've used today's ${CAPTIONS_PER_USER_PER_DAY} captions. More tomorrow.` });
+      }
+      await env.DB.batch([
+        env.DB.prepare("INSERT INTO caption_use (chat_id, day, n) VALUES (?, ?, 1) ON CONFLICT(chat_id, day) DO UPDATE SET n = n + 1").bind(chatId, day),
+        env.DB.prepare("DELETE FROM caption_use WHERE day < ?").bind(new Date(Date.now() - 2 * 864e5).toISOString().slice(0, 10)),
+      ]);
     }
     return handleCaption(env, cq, chatId, data.slice(4));
   }
