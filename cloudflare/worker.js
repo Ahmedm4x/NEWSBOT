@@ -44,7 +44,9 @@ function isBreaking(title, categories, rawBody) {
   if (/\/tags?\/(عاجل|breaking[-_ ]?news|breaking|urgent)(?=[\/"'?#&\s<]|$)/.test(text)) return true;
   return false;
 }
-const SEND_PER_RUN = 40; // Cloudflare free plan allows 50 outgoing requests per run
+const SEND_PER_RUN = 40;
+// Free Cloudflare AI models for captions, tried in order
+const CAPTION_MODELS = ["@cf/google/gemma-4-26b-a4b-it", "@cf/zai-org/glm-4.7-flash"]; // Cloudflare free plan allows 50 outgoing requests per run
 const LANG_NAMES = { ar: "العربية", en: "English", both: "العربية + English" };
 
 // ---------------- helpers ----------------
@@ -76,6 +78,12 @@ function tag(xml, name) {
   const m = xml.match(new RegExp(`<${name}[^>]*>([\\s\\S]*?)</${name}>`, "i"));
   if (!m) return "";
   return m[1].replace(/^\s*<!\[CDATA\[([\s\S]*?)\]\]>\s*$/, "$1").trim();
+}
+
+function shortHash(s) {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return (h >>> 0).toString(36);
 }
 
 function splitList(arg) {
@@ -125,6 +133,7 @@ async function setupDb(env) {
     env.DB.prepare("CREATE TABLE IF NOT EXISTS outbox (n INTEGER PRIMARY KEY AUTOINCREMENT, chat_id TEXT, item TEXT, created INTEGER)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS breaking_log (id TEXT PRIMARY KEY, title TEXT, ts INTEGER)"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS articles (h TEXT PRIMARY KEY, title TEXT, summary TEXT, lang TEXT, ts INTEGER)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS delay_log (id TEXT PRIMARY KEY, title TEXT, pub INTEGER, found INTEGER, sent INTEGER)"),
   ]);
 }
@@ -224,13 +233,15 @@ function buildText(item, limit) {
 
 async function sendArticle(env, chatId, item) {
   const silent = !(item.breaking || item.hits?.length);
+  const captionRow = item.lang === "en" && env.ADMIN_ID && String(chatId) === String(env.ADMIN_ID)
+    ? [[{ text: "✍️ Caption", callback_data: "cap:" + shortHash(item.id) }]] : [];
   const reply_markup = {
     inline_keyboard: [[
       { text: "📋 نسخ / Copy", copy_text: { text: `${item.title}\n${item.link}`.slice(0, 256) } },
       { text: "🔗 فتح / Open", url: item.link },
     ], [
       { text: "📝 نسخ العنوان / Copy title", copy_text: { text: item.title.slice(0, 256) } },
-    ]],
+    ], ...captionRow],
   };
   let res = {};
   if (item.image) {
@@ -291,6 +302,10 @@ async function checkFeeds(env, report = {}) {
     for (const i of fresh) {
       stmts.push(env.DB.prepare("INSERT OR IGNORE INTO seen (id, ts) VALUES (?, ?)").bind(i.id, now));
       if (i.skipRecent) continue;
+      if (i.lang === "en") {
+        stmts.push(env.DB.prepare("INSERT OR IGNORE INTO articles (h, title, summary, lang, ts) VALUES (?, ?, ?, ?, ?)")
+          .bind(shortHash(i.id), i.title, (i.summary || "").slice(0, 2500), i.lang, now));
+      }
       if (!firstRun && i.pub) {
         stmts.push(env.DB.prepare("INSERT OR IGNORE INTO delay_log (id, title, pub, found) VALUES (?, ?, ?, ?)").bind(i.id, i.title, i.pub, now));
       }
@@ -330,6 +345,7 @@ async function checkFeeds(env, report = {}) {
     env.DB.prepare("DELETE FROM seen WHERE ts < ?").bind(Date.now() - 4 * day),
     env.DB.prepare("DELETE FROM outbox WHERE created < ?").bind(Date.now() - day),
     env.DB.prepare("DELETE FROM delay_log WHERE found < ?").bind(Date.now() - 2 * day),
+    env.DB.prepare("DELETE FROM articles WHERE ts < ?").bind(Date.now() - 3 * day),
     env.DB.prepare("DELETE FROM recent WHERE id NOT IN (SELECT id FROM recent ORDER BY ts DESC, rowid DESC LIMIT 60)"),
   ]);
 }
@@ -356,6 +372,58 @@ async function sendOutbox(env) {
   if (done.length) {
     await env.DB.prepare(`DELETE FROM outbox WHERE n IN (${done.map(() => "?").join(",")})`).bind(...done).run();
   }
+}
+
+// ---------------- AI caption ----------------
+
+async function makeCaption(env, a) {
+  if (!env.AI) return { error: "AI is not connected" };
+  const prompt = `Write an Instagram caption for this Shafaq News article.
+
+Title: ${a.title}
+Article: ${(a.summary || "").slice(0, 2000)}
+
+Rules:
+- Keep it short: one or two lines, accurate and catchy, safe for Instagram Explore.
+- Avoid harsh words like kill, killed, dead, destroyed, massacre, blood. Use softer wording (for example "lost their lives", "damaged").
+- No em dashes. At most one emoji.
+- Then one new line with exactly 5 trending hashtags about the topic. The first must be #Shafaq_news.
+
+Reply with only the caption and the hashtags, nothing else.`;
+  let lastErr = "";
+  for (const model of CAPTION_MODELS) {
+    try {
+      const out = await env.AI.run(model, {
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 200,
+      });
+      const text = (out?.response ?? out?.choices?.[0]?.message?.content ?? "").trim();
+      if (text) return { text: text.replace(/\s*[—–]\s*/g, ", ").replace(/^["']|["']$/g, "") };
+      lastErr = "empty answer";
+    } catch (e) {
+      lastErr = String(e.message || e);
+      console.log(`Caption with ${model} failed: ${lastErr}`);
+    }
+  }
+  return { error: lastErr };
+}
+
+async function handleCaption(env, cq, chatId, h) {
+  await tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text: "✍️ ..." });
+  const a = await env.DB.prepare("SELECT * FROM articles WHERE h = ?").bind(h).first();
+  if (!a) return say(env, chatId, "This article is too old for a caption.");
+  const r = await makeCaption(env, a);
+  if (r.error) {
+    const limit = /limit|quota|neuron|429|exceed/i.test(r.error);
+    return say(env, chatId, limit ? "Daily free AI limit reached. Try again tomorrow." : "Couldn't write a caption: " + esc(r.error.slice(0, 200)));
+  }
+  return say(env, chatId, `<pre>${esc(r.text)}</pre>`, {
+    reply_parameters: { message_id: cq.message.message_id, allow_sending_without_reply: true },
+    reply_markup: { inline_keyboard: [[
+      ...(r.text.length <= 256 ? [{ text: "📋 Copy", copy_text: { text: r.text } }] : []),
+      { text: "🔄 Another one", callback_data: "cap:" + h },
+    ]] },
+  });
 }
 
 // ---------------- commands ----------------
@@ -516,6 +584,13 @@ async function handleCallback(env, cq) {
   const user = (await getUser(env, chatId)) || newUser(chatId);
   const data = cq.data || "";
   let toast = "✅";
+
+  if (data.startsWith("cap:")) {
+    if (!env.ADMIN_ID || chatId !== String(env.ADMIN_ID)) {
+      return tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text: "Not available" });
+    }
+    return handleCaption(env, cq, chatId, data.slice(4));
+  }
 
   if (data.startsWith("lang:")) {
     user.lang = data.slice(5);

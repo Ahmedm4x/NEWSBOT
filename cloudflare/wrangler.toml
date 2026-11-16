@@ -12,6 +12,10 @@ binding = "DB"
 database_name = "newsbot"
 database_id = "2f691567-6479-4a35-8b54-946e717776ff"
 
+# Cloudflare's own AI (free daily allowance), used for captions
+[ai]
+binding = "AI"
+
 [triggers]
 crons = ["* * * * *"]   # every minute, all day
 
