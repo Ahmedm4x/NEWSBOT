@@ -1,0 +1,19 @@
+# Cloudflare settings for the bot. Cloudflare reads this on every deploy.
+name = "proud-art-7f71shafaq-news-bo"
+main = "worker.js"
+compatibility_date = "2025-09-01"
+workers_dev = true
+
+# keep variables set in the dashboard (ADMIN_ID). Secrets are always kept.
+keep_vars = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "newsbot"
+database_id = "2f691567-6479-4a35-8b54-946e717776ff"
+
+[triggers]
+crons = ["* * * * *"]   # every minute, all day
+
+[observability]
+enabled = true
