@@ -46,7 +46,12 @@ function isBreaking(title, categories, rawBody) {
 }
 const SEND_PER_RUN = 40; // Cloudflare free plan allows 50 outgoing requests per run
 // Free Cloudflare AI models for captions, tried in order
-const CAPTION_MODELS = ["@cf/google/gemma-4-26b-a4b-it", "@cf/zai-org/glm-4.7-flash", "@cf/meta/llama-3.3-70b-instruct-fp8-fast", "@cf/meta/llama-3.1-8b-instruct"];
+// fast models first (no "thinking" step), slower ones only as a last resort
+const CAPTION_MODELS = [
+  "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+  "@cf/meta/llama-3.1-8b-instruct-fast",
+  "@cf/google/gemma-4-26b-a4b-it",
+];
 const CAPTIONS_PER_USER_PER_DAY = 30; // safety limit for everyone except the admin
 // Starting word list for captions (avoid -> use instead). Change it in Telegram with /avoid
 const DEFAULT_AVOID = {
@@ -480,32 +485,31 @@ Write the caption with these rules:
 - Then one new line with exactly 5 trending hashtags about the topic. The first one must be #Shafaq_news. Never use these hashtags: ${BLOCKED_HASHTAGS.map((h) => "#" + h).join(" ")}. Use place, country or topic hashtags instead.
 
 Reply with only the caption and the hashtags, nothing else.`;
-  let lastErr = "";
+  const errors = [];
   const started = Date.now();
   for (const model of CAPTION_MODELS) {
     const left = 25000 - (Date.now() - started); // stay inside Cloudflare's 30 second limit
-    if (left < 3000) { lastErr ||= "timed out"; break; }
+    if (left < 3000) break;
     try {
       const out = await Promise.race([
         env.AI.run(model, {
           messages: [{ role: "user", content: prompt }],
-          max_tokens: 1000, // room for models that think before answering
+          max_tokens: 400,
         }),
-        new Promise((_, rej) => setTimeout(() => rej(new Error("took too long")), Math.min(left, 12000))),
+        new Promise((_, rej) => setTimeout(() => rej(new Error("took too long")), Math.min(left, 10000))),
       ]);
       const text = readAiText(out);
       if (text) {
         const clean = text.replace(/\s*[—–]\s*/g, ", ").replace(/^["']|["']$/g, "");
         return { text: fixHashtags(applyAvoidList(clean, avoid)) };
       }
-      lastErr = `${model.split("/").pop()} sent: ${JSON.stringify(out).slice(0, 300)}`;
-      console.log("Empty caption:", lastErr);
+      errors.push(`${model.split("/").pop()} sent: ${JSON.stringify(out).slice(0, 150)}`);
     } catch (e) {
-      lastErr = `${model.split("/").pop()}: ${String(e.message || e)}`;
-      console.log(`Caption with ${model} failed: ${lastErr}`);
+      errors.push(`${model.split("/").pop()}: ${String(e.message || e).slice(0, 150)}`);
+      console.log(`Caption with ${model} failed: ${errors.at(-1)}`);
     }
   }
-  return { error: lastErr };
+  return { error: errors.join("\n") || "no model answered in time" };
 }
 
 async function handleCaption(env, cq, chatId, h) {
