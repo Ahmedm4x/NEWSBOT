@@ -44,10 +44,50 @@ function isBreaking(title, categories, rawBody) {
   if (/\/tags?\/(عاجل|breaking[-_ ]?news|breaking|urgent)(?=[\/"'?#&\s<]|$)/.test(text)) return true;
   return false;
 }
-const SEND_PER_RUN = 40;
+const SEND_PER_RUN = 40; // Cloudflare free plan allows 50 outgoing requests per run
 // Free Cloudflare AI models for captions, tried in order
 const CAPTION_MODELS = ["@cf/google/gemma-4-26b-a4b-it", "@cf/zai-org/glm-4.7-flash"];
-const CAPTIONS_PER_USER_PER_DAY = 30; // safety limit for everyone except the admin // Cloudflare free plan allows 50 outgoing requests per run
+const CAPTIONS_PER_USER_PER_DAY = 30; // safety limit for everyone except the admin
+// Starting word list for captions (avoid -> use instead). Change it in Telegram with /avoid
+const DEFAULT_AVOID = {
+  killed: "lost their lives",
+  kill: "harm",
+  killing: "deaths",
+  dead: "victims",
+  destroyed: "damaged",
+  massacre: "deadly attack",
+  bloody: "violent",
+};
+
+async function getAvoidList(env) {
+  const m = await env.DB.prepare("SELECT v FROM meta WHERE k = 'avoid_words'").first();
+  return m ? JSON.parse(m.v) : { ...DEFAULT_AVOID };
+}
+
+async function saveAvoidList(env, list) {
+  await env.DB.prepare("INSERT INTO meta (k, v) VALUES ('avoid_words', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v")
+    .bind(JSON.stringify(list)).run();
+}
+
+const escRe = (w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+// safety net: replace any avoided word the AI still used (keeps a capital first letter)
+function applyAvoidList(text, list) {
+  let out = text;
+  // drop hashtags that contain an avoided word, e.g. #Killed
+  for (const bad of Object.keys(list)) {
+    out = out.replace(new RegExp(`\\s?#[\\p{L}\\p{N}_]*${escRe(bad)}[\\p{L}\\p{N}_]*`, "giu"), "");
+  }
+  for (const [bad, good] of Object.entries(list)) {
+    const re = new RegExp(`(^|[^\\p{L}#])(${escRe(bad)})(?=$|[^\\p{L}])`, "giu");
+    out = out.replace(re, (all, pre, word) => {
+      const rep = word[0] === word[0].toUpperCase() && word[0] !== word[0].toLowerCase()
+        ? good.charAt(0).toUpperCase() + good.slice(1) : good;
+      return pre + rep;
+    });
+  }
+  return out;
+}
 const LANG_NAMES = { ar: "العربية", en: "English", both: "العربية + English" };
 
 // ---------------- helpers ----------------
@@ -380,6 +420,8 @@ async function sendOutbox(env) {
 
 async function makeCaption(env, a) {
   if (!env.AI) return { error: "AI is not connected" };
+  const avoid = await getAvoidList(env);
+  const avoidRules = Object.entries(avoid).map(([b, g]) => `"${b}" -> "${g}"`).join(", ");
   const prompt = `Write an Instagram caption for this Shafaq News article.
 
 Title: ${a.title}
@@ -387,7 +429,8 @@ Article: ${(a.summary || "").slice(0, 2000)}
 
 Rules:
 - Keep it short: one or two lines, accurate and catchy, safe for Instagram Explore.
-- Avoid harsh words like kill, killed, dead, destroyed, massacre, blood. Use softer wording (for example "lost their lives", "damaged").
+- Never use these words. Use the replacement instead and keep the sentence natural: ${avoidRules || "none"}.
+- Keep the tone calm and neutral, no graphic or violent wording.
 - No em dashes. At most one emoji.
 - Then one new line with exactly 5 trending hashtags about the topic. The first must be #Shafaq_news.
 
@@ -400,7 +443,10 @@ Reply with only the caption and the hashtags, nothing else.`;
         max_tokens: 200,
       });
       const text = (out?.response ?? out?.choices?.[0]?.message?.content ?? "").trim();
-      if (text) return { text: text.replace(/\s*[—–]\s*/g, ", ").replace(/^["']|["']$/g, "") };
+      if (text) {
+        const clean = text.replace(/\s*[—–]\s*/g, ", ").replace(/^["']|["']$/g, "");
+        return { text: applyAvoidList(clean, avoid) };
+      }
       lastErr = "empty answer";
     } catch (e) {
       lastErr = String(e.message || e);
@@ -567,6 +613,36 @@ async function handleMessage(env, msg) {
 
     case "/status":
       return say(env, chatId, statusText(user));
+
+    case "/avoid": {
+      const list = await getAvoidList(env);
+      const isAdmin = env.ADMIN_ID && chatId === String(env.ADMIN_ID);
+      if (arg.toLowerCase() === "reset" && isAdmin) {
+        await saveAvoidList(env, { ...DEFAULT_AVOID });
+        return say(env, chatId, "✅ Word list reset.");
+      }
+      const m = arg.match(/^(.+?)\s*(?:=|->|→)\s*(.+)$/);
+      if (m && isAdmin) {
+        list[m[1].trim().toLowerCase()] = m[2].trim();
+        await saveAvoidList(env, list);
+      } else if (m) {
+        return say(env, chatId, "Only the bot owner can change the word list.");
+      }
+      const lines = Object.entries(list).map(([b, g]) => `• ${esc(b)} → ${esc(g)}`);
+      return say(env, chatId,
+        `<b>Caption word list</b>\n\n${lines.join("\n") || "Empty"}` +
+        (isAdmin ? `\n\nAdd or change:\n<code>/avoid word = replacement</code>\nRemove:\n<code>/unavoid word</code>\nBack to the starting list:\n<code>/avoid reset</code>` : ""));
+    }
+
+    case "/unavoid": {
+      if (!(env.ADMIN_ID && chatId === String(env.ADMIN_ID))) return say(env, chatId, "Only the bot owner can change the word list.");
+      const list = await getAvoidList(env);
+      const words = splitList(arg).map((w) => w.toLowerCase());
+      if (!words.length) return say(env, chatId, "Use: <code>/unavoid word</code>");
+      for (const w of words) delete list[w];
+      await saveAvoidList(env, list);
+      return say(env, chatId, "✅ Removed: " + esc(words.join(", ")));
+    }
 
     case "/stats":
       if (env.ADMIN_ID && chatId === String(env.ADMIN_ID)) {
