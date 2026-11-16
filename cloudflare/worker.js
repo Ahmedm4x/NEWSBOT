@@ -457,35 +457,57 @@ const PLACE_TAGS = [
   [/\bbaghdad/i, "#Baghdad"], [/\berbil/i, "#Erbil"], [/\bbasra/i, "#Basra"], [/\bgaza/i, "#Gaza"],
   [/\bqatar/i, "#Qatar"], [/\bjordan/i, "#Jordan"], [/\begypt/i, "#Egypt"], [/\brussia/i, "#Russia"], [/\bchina|chinese/i, "#China"],
   [/\boil\b|crude|opec/i, "#Oil"], [/\beurope|european/i, "#Europe"],
+  // topics
+  [/\btelegram\b/i, "#Telegram"], [/social media|facebook|instagram|tiktok|platform/i, "#SocialMedia"],
+  [/technolog|internet|digital|cyber/i, "#Technology"], [/\bdollar|dinar|currency|exchange rate/i, "#Dollar"],
+  [/\bgold\b/i, "#Gold"], [/econom|market|trade|budget|investment/i, "#Economy"],
+  [/election|vote|ballot/i, "#Elections"], [/parliament|lawmaker|\bmp\b|cabinet|minister|government/i, "#Politics"],
+  [/football|match|league|cup\b|sport/i, "#Sports"], [/water|drought|rain|flood|weather/i, "#Weather"],
+  [/health|hospital|disease|virus/i, "#Health"], [/court|judici|verdict|sentence/i, "#Justice"],
+  [/security|forces|army|attack|strike|drone|missile/i, "#Security"],
 ];
 
-// remove blocked hashtags and make sure #Shafaq_news is the first hashtag
+// Clean up hashtags: one line, exactly 5, #Shafaq_news first, short popular tags only
 function fixHashtags(text) {
-  let out = text.replace(/#([\p{L}\p{N}_]+)/gu, (all, tagName) => {
-    const t = tagName.toLowerCase().replace(/_/g, "");
-    return BLOCKED_HASHTAGS.includes(t) ? "" : all;
-  });
-  // drop long compound hashtags (low volume), keep short popular ones
-  out = out.replace(/#([\p{L}\p{N}_]+)/gu, (all, t) => (t.length > 12 && !/^shafaq_?news$/i.test(t) ? "" : all));
-  out = out.replace(/#shafaq_?news\b/gi, "").replace(/[ \t]{2,}/g, " ");
-  const lines = out.split("\n").map((l) => l.trimEnd());
-  let i = lines.length - 1;
-  while (i >= 0 && !lines[i].trim()) i--;
-  const isTagLine = (l) => /^\s*(#[\p{L}\p{N}_]+\s*)*$/u.test(l) && l.includes("#");
-  let tagLine = "";
-  if (i >= 0 && isTagLine(lines[i])) { tagLine = lines[i].trim(); lines.splice(i, 1); }
-  const tags = ["#Shafaq_news", ...tagLine.split(/\s+/).filter(Boolean)];
-  // fill up to 5 with short tags for places named in the caption
-  const body = lines.join(" ");
+  const isTagLine = (l) => l.includes("#") && /^\s*(#[\p{L}\p{N}_]+[\s,]*)+$/u.test(l);
+  const lines = text.split("\n").map((l) => l.trim());
+  const found = [];
+  const textLines = [];
+  for (const l of lines) {
+    if (isTagLine(l)) found.push(...(l.match(/#[\p{L}\p{N}_]+/gu) || []));
+    else textLines.push(l);
+  }
+  // hashtags stuck at the end of the last sentence
+  let last = textLines.length - 1;
+  while (last >= 0 && !textLines[last]) last--;
+  if (last >= 0) {
+    const m = textLines[last].match(/((?:\s*#[\p{L}\p{N}_]+)+)\s*$/u);
+    if (m) { found.push(...m[1].match(/#[\p{L}\p{N}_]+/gu)); textLines[last] = textLines[last].slice(0, m.index).trim(); }
+  }
+  const good = (tg) => {
+    const t = tg.slice(1);
+    if (/^shafaq_?news$/i.test(t)) return false;              // added first below
+    if (BLOCKED_HASHTAGS.includes(t.toLowerCase().replace(/_/g, ""))) return false;
+    if (t.includes("_")) return false;                        // #Telegram_ban, #Iraq_news style
+    if (t.length > 12) return false;                          // long, low-volume tags
+    return true;
+  };
+  const tags = ["#Shafaq_news"];
+  for (const tg of found) {
+    if (tags.length >= 5) break;
+    if (good(tg) && !tags.some((x) => x.toLowerCase() === tg.toLowerCase())) tags.push(tg);
+  }
+  const body = textLines.join(" ");
   for (const [re, tagName] of PLACE_TAGS) {
     if (tags.length >= 5) break;
     if (re.test(body) && !tags.some((x) => x.toLowerCase() === tagName.toLowerCase())) tags.push(tagName);
   }
-  for (const extra of ["#MiddleEast", "#News"]) {
+  for (const extra of ["#MiddleEast", "#News", "#IraqNews", "#Breaking"]) {
     if (tags.length >= 5) break;
     if (!tags.some((x) => x.toLowerCase() === extra.toLowerCase())) tags.push(extra);
   }
-  return (lines.join("\n").trim() + "\n" + tags.slice(0, 5).join(" ")).replace(/\n{3,}/g, "\n\n").trim();
+  const caption = textLines.join("\n").replace(/\n{2,}/g, "\n").trim();
+  return caption + "\n" + tags.join(" ");
 }
 
 // Workers AI models answer in different shapes, read the text from any of them
@@ -519,11 +541,23 @@ Article: ${(a.summary || "").slice(0, 2000)}
 Write the caption with these rules:
 - Short: one or two sentences. A strong, clear first line, then the key fact. A full statement, not a question.
 - Safe and trendy, written to do well on Instagram Explore, but always accurate. Never add facts that are not in the article.
+- Keep conditions, deadlines and uncertainty exactly as in the article. A warning or a deadline is not a final decision: write "plans to block unless..." not "will block". "Reports" or "allegations" stay reports or allegations.
 - Neutral news-agency tone, like Reuters or BBC. Attribute claims: "X says", "X claims", "according to X". If the article says a claim could not be verified, keep that.
 - Groups such as the Houthis, IRGC, armed factions: report neutrally, never praise or support them.
 - Never use these words. Use the replacement instead and keep the sentence natural: ${avoidRules || "none"}.
 - Calm wording, nothing graphic or violent. No em dashes. No emojis at all.
-- Then one new line with exactly 5 hashtags. The first one must be #Shafaq_news. The other 4 must be short, popular, high-volume hashtags: countries, cities, regions or broad topics, for example #Iraq #Iran #Israel #USA #MiddleEast #Baghdad #Kurdistan #Oil #Economy. No long or made-up compound hashtags like #USIranTensions or #MiddleEastConflict. Never use these hashtags: ${BLOCKED_HASHTAGS.map((h) => "#" + h).join(" ")}.
+- Then ONE new line with exactly 5 hashtags, all on that same line, separated by spaces. The first one must be #Shafaq_news. No underscores in the other hashtags. The other 4 must be short, popular, high-volume hashtags: countries, cities, regions or broad topics, for example #Iraq #Iran #Israel #USA #MiddleEast #Baghdad #Kurdistan #Oil #Economy. No long or made-up compound hashtags like #USIranTensions or #MiddleEastConflict. Never use these hashtags: ${BLOCKED_HASHTAGS.map((h) => "#" + h).join(" ")}.
+
+Examples of good captions (follow this style):
+
+Iraq's Communications and Media Commission says it plans to block Telegram unless the platform's operator complies with national regulations within 30 days. The commission cites content it considers a threat to national security.
+#Shafaq_news #Iraq #Telegram #Technology #SocialMedia
+
+Iranian Foreign Ministry spokesperson Esmaeil Baqaei says reports of alleged Iranian plots against US officials are part of a coordinated Israeli disinformation campaign. He claims the aim is to build American and European support for further tensions.
+#Shafaq_news #Iran #Israel #USA #MiddleEast
+
+Najaf International Airport says it has received no official instructions to resume flights with Iran. A source says Baghdad is talking with Washington about a possible exemption for the airport, though reports of a confirmed exemption are unverified.
+#Shafaq_news #Iraq #Najaf #Iran #IraqNews
 
 Reply with only the caption and the hashtags, nothing else.`;
   const errors = [];
