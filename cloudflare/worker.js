@@ -210,6 +210,31 @@ async function setupDb(env) {
     env.DB.prepare("CREATE TABLE IF NOT EXISTS articles (h TEXT PRIMARY KEY, title TEXT, summary TEXT, lang TEXT, ts INTEGER)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS delay_log (id TEXT PRIMARY KEY, title TEXT, pub INTEGER, found INTEGER, sent INTEGER)"),
   ]);
+  const cols = (await env.DB.prepare("PRAGMA table_info(users)").all()).results.map((c) => c.name);
+  if (!cols.includes("last_seen")) await addUserColumns(env);
+}
+
+async function addUserColumns(env) {
+  for (const col of ["name", "username", "last_seen"]) {
+    try { await env.DB.prepare(`ALTER TABLE users ADD COLUMN ${col} ${col === "last_seen" ? "INTEGER" : "TEXT"}`).run(); }
+    catch { /* column already exists */ }
+  }
+}
+
+// remember who the user is (Telegram name and @username)
+async function touchUser(env, chatId, from) {
+  if (!from) return;
+  const name = [from.first_name, from.last_name].filter(Boolean).join(" ").slice(0, 80);
+  try {
+    await env.DB.prepare("UPDATE users SET name = ?, username = ?, last_seen = ? WHERE chat_id = ?")
+      .bind(name, from.username || "", Date.now(), String(chatId)).run();
+  } catch {
+    await addUserColumns(env);
+    try {
+      await env.DB.prepare("UPDATE users SET name = ?, username = ?, last_seen = ? WHERE chat_id = ?")
+        .bind(name, from.username || "", Date.now(), String(chatId)).run();
+    } catch (e) { console.log("touchUser failed:", e); }
+  }
 }
 
 async function getUser(env, chatId) {
@@ -734,6 +759,7 @@ async function handleMessage(env, msg) {
     const isNew = !user;
     user = user || newUser(chatId);
     await saveUser(env, user);
+    await touchUser(env, chatId, msg.from);
     await say(env, chatId,
       (isNew ? "👋 أهلاً! ستصلك أخبار شفق نيوز هنا فور نشرها.\nWelcome! Shafaq News will arrive here as soon as it's published.\n\n" : "") +
       "اختر اللغة / Choose a language:",
@@ -741,6 +767,7 @@ async function handleMessage(env, msg) {
     if (!text.startsWith("/") || text.startsWith("/start")) return;
   }
 
+  await touchUser(env, chatId, msg.from);
   if (!text.startsWith("/")) {
     return say(env, chatId, "اكتب /help لرؤية الأوامر / Type /help to see the commands.");
   }
@@ -848,9 +875,19 @@ async function handleMessage(env, msg) {
 
     case "/stats":
       if (env.ADMIN_ID && chatId === String(env.ADMIN_ID)) {
-        const u = await env.DB.prepare("SELECT COUNT(*) AS c FROM users").first();
         const o = await env.DB.prepare("SELECT COUNT(*) AS c FROM outbox").first();
-        return say(env, chatId, `👥 Users: ${u.c}\n📨 Waiting to send: ${o.c}`);
+        let rows = [];
+        try { rows = (await env.DB.prepare("SELECT * FROM users ORDER BY joined").all()).results; }
+        catch { rows = []; }
+        const day = (ms) => ms ? new Date(ms + 3 * 3600e3).toISOString().slice(5, 10).split("-").reverse().join("/") : "?";
+        const lines = rows.slice(0, 60).map((r, i) => {
+          const who = r.name ? esc(r.name) : "<i>unknown yet</i>";
+          const at = r.username ? ` @${esc(r.username)}` : "";
+          return `${i + 1}. ${who}${at} · joined ${day(r.joined)} · ${r.lang}`;
+        });
+        return say(env, chatId,
+          `👥 <b>Users: ${rows.length}</b>\n📨 Waiting to send: ${o.c}\n\n${lines.join("\n")}` +
+          (rows.some((r) => !r.name) ? "\n\n<i>Names show up after each person uses the bot once more.</i>" : ""));
       }
       return say(env, chatId, "اكتب /help لرؤية الأوامر / Type /help to see the commands.");
 
@@ -864,6 +901,7 @@ async function handleCallback(env, cq) {
   const user = (await getUser(env, chatId)) || newUser(chatId);
   const data = cq.data || "";
   let toast = "✅";
+  await touchUser(env, chatId, cq.from);
 
   if (data.startsWith("cap:") || data.startsWith("sty:")) {
     const isAdmin = env.ADMIN_ID && chatId === String(env.ADMIN_ID);
