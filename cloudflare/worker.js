@@ -228,6 +228,8 @@ async function sendArticle(env, chatId, item) {
     inline_keyboard: [[
       { text: "📋 نسخ / Copy", copy_text: { text: `${item.title}\n${item.link}`.slice(0, 256) } },
       { text: "🔗 فتح / Open", url: item.link },
+    ], [
+      { text: "📝 نسخ العنوان / Copy title", copy_text: { text: item.title.slice(0, 256) } },
     ]],
   };
   let res = {};
