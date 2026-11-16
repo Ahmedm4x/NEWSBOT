@@ -7,7 +7,7 @@ Features
   - Filters: language and sections
   - Keyword alerts: marked with a star, pinned, and sent with sound
   - Copy + Open buttons under every article
-  - Commands: /latest /pause /resume /lang /only /all /sections /watch /unwatch /keywords /status /help
+  - Commands: /latest /lang /only /all /sections /watch /unwatch /keywords /status /help
 """
 import html
 import json
@@ -33,12 +33,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SEEN_FILE = os.path.join(HERE, "seen.json")
 STATE_FILE = os.path.join(HERE, "state.json")
 HEADERS = {"User-Agent": "Mozilla/5.0 (ShafaqTelegramBot)"}
-COMMANDS_VERSION = 1
+COMMANDS_VERSION = 2
 # ====================
 
 DEFAULT_STATE = {
     "offset": 0,          # last Telegram update we handled
-    "paused_until": 0,    # unix time, 0 = not paused
     "lang": "both",       # ar / en / both
     "only": [],           # sections filter, empty = all sections
     "keywords": [],       # keyword alerts
@@ -65,6 +64,7 @@ def save_json(path, data):
 def load_state():
     state = dict(DEFAULT_STATE)
     state.update(load_json(STATE_FILE, {}))
+    state.pop("paused_until", None)   # pause feature was removed
     return state
 
 
@@ -96,8 +96,6 @@ def set_commands_menu(state):
         return
     cmds = [
         ("latest", "Last 5 articles / آخر 5 أخبار"),
-        ("pause", "Pause, e.g. /pause 3 (hours)"),
-        ("resume", "Resume news"),
         ("lang", "ar / en / both"),
         ("only", "Only some sections, e.g. /only Iraq, Kurdistan"),
         ("all", "All sections again"),
@@ -221,8 +219,6 @@ def send_article(item, state):
 HELP = """<b>الأوامر / Commands</b>
 
 /latest  آخر 5 أخبار (or /latest 10)
-/pause 3  إيقاف لمدة 3 ساعات
-/resume  تشغيل من جديد
 /lang ar | en | both  اللغة
 /only Iraq, Kurdistan  أقسام معينة فقط
 /all  كل الأقسام
@@ -250,15 +246,6 @@ def run_command(cmd, arg, state):
         lines = [f"• <a href=\"{html.escape(i['link'])}\">{html.escape(i['title'])}</a>"
                  for i in reversed(items)]
         return "<b>آخر الأخبار / Latest</b>\n\n" + "\n\n".join(lines)
-
-    if cmd == "/pause":
-        hours = float(arg) if re.fullmatch(r"\d+(\.\d+)?", arg) else 3
-        state["paused_until"] = now + hours * 3600
-        return f"⏸ متوقف لمدة {hours:g} ساعة / Paused for {hours:g}h. /resume to restart."
-
-    if cmd == "/resume":
-        state["paused_until"] = 0
-        return "▶️ تم التشغيل / Resumed."
 
     if cmd == "/lang":
         if arg.lower() in ("ar", "en", "both"):
@@ -300,11 +287,8 @@ def run_command(cmd, arg, state):
         return "⭐ Watching: " + (html.escape(", ".join(state["keywords"])) or "nothing")
 
     if cmd == "/status":
-        paused = state["paused_until"] > now
-        mins = int((state["paused_until"] - now) / 60) if paused else 0
         return (
             "<b>Status</b>\n\n"
-            f"News: {'⏸ paused (' + str(mins) + ' min left)' if paused else '▶️ on'}\n"
             f"Language: {state['lang']}\n"
             f"Sections: {html.escape(', '.join(state['only'])) or 'all'}\n"
             f"Keywords: {html.escape(', '.join(state['keywords'])) or 'none'}"
@@ -336,7 +320,6 @@ def handle_commands(state):
 # ---------- main loop ----------
 
 def check_once(seen, state, first_run):
-    paused = state["paused_until"] > time.time()
     seen_set = set(seen)
     for lang, feed in FEEDS.items():
         try:
@@ -347,7 +330,7 @@ def check_once(seen, state, first_run):
                 seen.append(item["id"])
                 state["recent"].append({"title": item["title"], "link": item["link"],
                                         "category": item["category"], "lang": lang})
-                if first_run or paused or not wanted(item, state):
+                if first_run or not wanted(item, state):
                     continue
                 send_article(item, state)
                 time.sleep(1)
