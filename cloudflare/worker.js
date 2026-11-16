@@ -481,12 +481,18 @@ Write the caption with these rules:
 
 Reply with only the caption and the hashtags, nothing else.`;
   let lastErr = "";
+  const started = Date.now();
   for (const model of CAPTION_MODELS) {
+    const left = 25000 - (Date.now() - started); // stay inside Cloudflare's 30 second limit
+    if (left < 3000) { lastErr ||= "timed out"; break; }
     try {
-      const out = await env.AI.run(model, {
-        messages: [{ role: "user", content: prompt }],
-        max_tokens: 1500, // room for models that think before answering
-      });
+      const out = await Promise.race([
+        env.AI.run(model, {
+          messages: [{ role: "user", content: prompt }],
+          max_tokens: 1000, // room for models that think before answering
+        }),
+        new Promise((_, rej) => setTimeout(() => rej(new Error("took too long")), Math.min(left, 12000))),
+      ]);
       const text = readAiText(out);
       if (text) {
         const clean = text.replace(/\s*[—–]\s*/g, ", ").replace(/^["']|["']$/g, "");
@@ -506,18 +512,34 @@ async function handleCaption(env, cq, chatId, h) {
   await tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text: "✍️ ..." });
   const a = await env.DB.prepare("SELECT * FROM articles WHERE h = ?").bind(h).first();
   if (!a) return say(env, chatId, "This article is too old for a caption.");
+
+  const wait = await say(env, chatId, "✍️ Writing caption...", {
+    reply_parameters: { message_id: cq.message.message_id, allow_sending_without_reply: true },
+  });
   const r = await makeCaption(env, a);
+
+  // remember the last attempt so /debug can show it
+  try {
+    await env.DB.prepare("INSERT INTO meta (k, v) VALUES ('last_caption', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v")
+      .bind(JSON.stringify({ at: new Date().toISOString(), ok: !r.error, error: r.error || null })).run();
+  } catch { /* ignore */ }
+
+  let text, reply_markup;
   if (r.error) {
     const limit = /limit|quota|neuron|429|exceed/i.test(r.error);
-    return say(env, chatId, limit ? "Daily free AI limit reached. Try again tomorrow." : "Couldn't write a caption: " + esc(r.error.slice(0, 200)));
-  }
-  return say(env, chatId, `<pre>${esc(r.text)}</pre>`, {
-    reply_parameters: { message_id: cq.message.message_id, allow_sending_without_reply: true },
-    reply_markup: { inline_keyboard: [[
+    text = limit ? "Daily free AI limit reached. Try again tomorrow." : "Couldn't write a caption: " + esc(r.error.slice(0, 300));
+    reply_markup = { inline_keyboard: [[{ text: "🔄 Try again", callback_data: "cap:" + h }]] };
+  } else {
+    text = `<pre>${esc(r.text)}</pre>`;
+    reply_markup = { inline_keyboard: [[
       ...(r.text.length <= 256 ? [{ text: "📋 Copy", copy_text: { text: r.text } }] : []),
       { text: "🔄 Another one", callback_data: "cap:" + h },
-    ]] },
-  });
+    ]] };
+  }
+  if (wait.ok) {
+    return tg(env, "editMessageText", { chat_id: chatId, message_id: wait.result.message_id, text, parse_mode: "HTML", reply_markup });
+  }
+  return say(env, chatId, text, { reply_markup });
 }
 
 // ---------------- commands ----------------
@@ -814,6 +836,8 @@ export default {
       try {
         const m = await env.DB.prepare("SELECT v FROM meta WHERE k = 'last_cron'").first();
         report.lastAutomaticRun = m ? JSON.parse(m.v) : "never";
+        const c = await env.DB.prepare("SELECT v FROM meta WHERE k = 'last_caption'").first();
+        report.lastCaption = c ? JSON.parse(c.v) : "never";
       } catch (e) { report.lastAutomaticRun = "never"; }
       return Response.json(report);
     }
@@ -823,12 +847,16 @@ export default {
         return new Response("Forbidden", { status: 403 });
       }
       const update = await request.json();
-      try {
-        if (update.message) await handleMessage(env, update.message);
-        else if (update.callback_query) await handleCallback(env, update.callback_query);
-      } catch (e) {
-        console.log("Update error:", e.stack || e);
-      }
+      // reply to Telegram right away and do the work in the background,
+      // so slow jobs (like AI captions) never make Telegram give up
+      ctx.waitUntil((async () => {
+        try {
+          if (update.message) await handleMessage(env, update.message);
+          else if (update.callback_query) await handleCallback(env, update.callback_query);
+        } catch (e) {
+          console.log("Update error:", e.stack || e);
+        }
+      })());
       return new Response("ok");
     }
 
