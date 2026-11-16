@@ -97,6 +97,7 @@ async function setupDb(env) {
     env.DB.prepare("CREATE TABLE IF NOT EXISTS recent (id TEXT PRIMARY KEY, title TEXT, link TEXT, category TEXT, lang TEXT, ts INTEGER)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS users (chat_id TEXT PRIMARY KEY, lang TEXT DEFAULT 'both', only TEXT DEFAULT '[]', keywords TEXT DEFAULT '[]', joined INTEGER)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS outbox (n INTEGER PRIMARY KEY AUTOINCREMENT, chat_id TEXT, item TEXT, created INTEGER)"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)"),
   ]);
 }
 
@@ -534,6 +535,10 @@ export default {
         const t = await fetch(FEEDS.ar, { headers: { "User-Agent": "Mozilla/5.0 (ShafaqTelegramBot)" } });
         report.feedTest = { status: t.status, start: (await t.text()).slice(0, 120) };
       } catch (e) { report.feedTest = String(e); }
+      try {
+        const m = await env.DB.prepare("SELECT v FROM meta WHERE k = 'last_cron'").first();
+        report.lastAutomaticRun = m ? JSON.parse(m.v) : "never";
+      } catch (e) { report.lastAutomaticRun = "never"; }
       return Response.json(report);
     }
 
@@ -555,6 +560,17 @@ export default {
   },
 
   async scheduled(event, env, ctx) {
-    await checkFeeds(env);
+    const report = {};
+    try {
+      await checkFeeds(env, report);
+    } catch (e) {
+      report.error = String(e.stack || e).slice(0, 500);
+      console.log("Cron error:", report.error);
+    }
+    report.at = new Date().toISOString();
+    try {
+      await env.DB.prepare("INSERT INTO meta (k, v) VALUES ('last_cron', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v")
+        .bind(JSON.stringify(report)).run();
+    } catch (e) { console.log("meta save failed:", e); }
   },
 };
