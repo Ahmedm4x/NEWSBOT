@@ -3,7 +3,6 @@ Shafaq News -> Telegram bot
 
 Features
   - New Shafaq News articles (Arabic + English) with photo, text and hashtag
-  - Ready-to-copy Instagram caption under each article (needs ANTHROPIC_API_KEY)
   - Breaking news (عاجل / Breaking) arrives with sound and a red mark, the rest is silent
   - Filters: language and sections
   - Keyword alerts: marked with a star, pinned, and sent with sound
@@ -22,8 +21,6 @@ import requests
 # ===== Settings =====
 BOT_TOKEN = os.getenv("BOT_TOKEN", "PUT_YOUR_BOT_TOKEN_HERE")
 CHAT_ID = os.getenv("CHAT_ID", "PUT_YOUR_CHAT_ID_HERE")
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")   # leave empty to turn captions off
-AI_MODEL = os.getenv("AI_MODEL", "claude-haiku-5-5")
 
 FEEDS = {
     "ar": "https://shafaq.com/rss/ar",
@@ -153,45 +150,6 @@ def fetch_items(lang, feed_url):
     return items
 
 
-# ---------- AI caption ----------
-
-def make_caption(item):
-    if not ANTHROPIC_API_KEY:
-        return None
-    arabic = item["lang"] == "ar"
-    first_tag = "#شفق_نيوز" if arabic else "#Shafaq_news"
-    prompt = f"""You write Instagram captions for Shafaq News.
-
-Article ({'Arabic' if arabic else 'English'}):
-Title: {item['title']}
-Text: {item['summary'][:1500]}
-
-Write a caption in {'Arabic' if arabic else 'English'}:
-- One or two short lines. Accurate, catchy, and safe for Instagram Explore.
-- Avoid harsh words like kill, killed, dead, destroyed, massacre, blood (in Arabic: قتل، مقتل، دمار، مجزرة، دماء). Use softer wording.
-- At most one emoji. No em dashes.
-- Then a new line with exactly 5 trending hashtags about the topic, the first one must be {first_tag}.
-
-Reply with only the caption and the hashtags."""
-    try:
-        r = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={"x-api-key": ANTHROPIC_API_KEY,
-                     "anthropic-version": "2023-06-01",
-                     "content-type": "application/json"},
-            json={"model": AI_MODEL, "max_tokens": 300,
-                  "messages": [{"role": "user", "content": prompt}]},
-            timeout=40)
-    except requests.RequestException as e:
-        print("AI caption failed:", e)
-        return None
-    if not r.ok:
-        print("AI caption error:", r.status_code, r.text[:300])
-        return None
-    parts = r.json().get("content", [])
-    return "".join(p.get("text", "") for p in parts if p.get("type") == "text").strip() or None
-
-
 # ---------- sending ----------
 
 def wanted(item, state):
@@ -253,15 +211,9 @@ def send_article(item, state):
     if hits:
         tg("pinChatMessage", chat_id=CHAT_ID, message_id=msg_id, disable_notification=True)
 
-    caption = make_caption(item)
-    if caption:
-        tg("sendMessage", chat_id=CHAT_ID,
-           text=f"<pre>{html.escape(caption)}</pre>", parse_mode="HTML",
-           disable_notification=True, reply_parameters={"message_id": msg_id})
-
     print(f"Sent: {item['title']} (text: {len(item['summary'])} chars"
           f"{', breaking' if breaking else ''}{', keywords: ' + ', '.join(hits) if hits else ''}"
-          f"{', caption' if caption else ''})")
+          ")")
 
 
 # ---------- commands ----------
@@ -355,8 +307,7 @@ def run_command(cmd, arg, state):
             f"News: {'⏸ paused (' + str(mins) + ' min left)' if paused else '▶️ on'}\n"
             f"Language: {state['lang']}\n"
             f"Sections: {html.escape(', '.join(state['only'])) or 'all'}\n"
-            f"Keywords: {html.escape(', '.join(state['keywords'])) or 'none'}\n"
-            f"Captions: {'on' if ANTHROPIC_API_KEY else 'off (no API key)'}"
+            f"Keywords: {html.escape(', '.join(state['keywords'])) or 'none'}"
         )
 
     return "Unknown command. /help"

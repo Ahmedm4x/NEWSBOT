@@ -28,7 +28,6 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           RUN_ONCE: "1"
           RUN_FOR: "0"   # one quick check per run (cron-job.org starts it every 2 minutes)
         run: python bot.py
