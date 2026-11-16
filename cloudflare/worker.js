@@ -65,18 +65,40 @@ const DEFAULT_AVOID = {
   bloody: "violent",
   "ballistic missiles": "missiles",
   "ballistic missile": "missile",
+  assassinate: "target",
+  assassinated: "targeted",
+  assassination: "targeting",
+  assassinations: "attacks",
+  war: "conflict",
+  wars: "conflicts",
+  escalation: "tensions",
+  escalations: "tensions",
 };
 // Hashtags never to use (sensitive or designated groups). Keep the name in the text only.
 const BLOCKED_HASHTAGS = ["houthis", "houthi", "irgc", "hezbollah", "hamas", "isis", "daesh", "pkk", "alqaeda", "ansarallah", "kataibhezbollah"];
 
-async function getAvoidList(env) {
+// The saved list stores only your changes: words you added or changed, and words you removed.
+// Starting words are always included unless you removed them.
+async function loadAvoidChanges(env) {
   const m = await env.DB.prepare("SELECT v FROM meta WHERE k = 'avoid_words'").first();
-  return m ? JSON.parse(m.v) : { ...DEFAULT_AVOID };
+  const saved = m ? JSON.parse(m.v) : {};
+  if (!saved._v2) return { set: Object.fromEntries(Object.entries(saved).filter(([k]) => !(k in DEFAULT_AVOID))), removed: [] };
+  return { set: saved.set || {}, removed: saved.removed || [] };
+}
+
+async function getAvoidList(env) {
+  const c = await loadAvoidChanges(env);
+  const list = { ...DEFAULT_AVOID, ...c.set };
+  for (const r of c.removed) delete list[r];
+  return list;
 }
 
 async function saveAvoidList(env, list) {
+  const set = {}, removed = [];
+  for (const [k, v] of Object.entries(list)) if (DEFAULT_AVOID[k] !== v) set[k] = v;
+  for (const k of Object.keys(DEFAULT_AVOID)) if (!(k in list)) removed.push(k);
   await env.DB.prepare("INSERT INTO meta (k, v) VALUES ('avoid_words', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v")
-    .bind(JSON.stringify(list)).run();
+    .bind(JSON.stringify({ _v2: true, set, removed })).run();
 }
 
 const escRe = (w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -428,23 +450,42 @@ async function sendOutbox(env) {
 
 // ---------------- AI caption ----------------
 
+const PLACE_TAGS = [
+  [/\biraq/i, "#Iraq"], [/\biran/i, "#Iran"], [/\bisrael/i, "#Israel"], [/\b(us|usa|united states|american|washington|trump)\b/i, "#USA"],
+  [/\bsyria/i, "#Syria"], [/\blebanon|lebanese/i, "#Lebanon"], [/\bt[uü]rki(ye|sh)|\bturkey/i, "#Turkiye"],
+  [/\bsaudi/i, "#SaudiArabia"], [/\byemen/i, "#Yemen"], [/\bkurdistan|kurdish/i, "#Kurdistan"],
+  [/\bbaghdad/i, "#Baghdad"], [/\berbil/i, "#Erbil"], [/\bbasra/i, "#Basra"], [/\bgaza/i, "#Gaza"],
+  [/\bqatar/i, "#Qatar"], [/\bjordan/i, "#Jordan"], [/\begypt/i, "#Egypt"], [/\brussia/i, "#Russia"], [/\bchina|chinese/i, "#China"],
+  [/\boil\b|crude|opec/i, "#Oil"], [/\beurope|european/i, "#Europe"],
+];
+
 // remove blocked hashtags and make sure #Shafaq_news is the first hashtag
 function fixHashtags(text) {
   let out = text.replace(/#([\p{L}\p{N}_]+)/gu, (all, tagName) => {
     const t = tagName.toLowerCase().replace(/_/g, "");
     return BLOCKED_HASHTAGS.includes(t) ? "" : all;
   });
+  // drop long compound hashtags (low volume), keep short popular ones
+  out = out.replace(/#([\p{L}\p{N}_]+)/gu, (all, t) => (t.length > 12 && !/^shafaq_?news$/i.test(t) ? "" : all));
   out = out.replace(/#shafaq_?news\b/gi, "").replace(/[ \t]{2,}/g, " ");
   const lines = out.split("\n").map((l) => l.trimEnd());
   let i = lines.length - 1;
   while (i >= 0 && !lines[i].trim()) i--;
   const isTagLine = (l) => /^\s*(#[\p{L}\p{N}_]+\s*)*$/u.test(l) && l.includes("#");
-  if (i >= 0 && (isTagLine(lines[i]) || !lines[i].trim())) {
-    lines[i] = ("#Shafaq_news " + lines[i].trim()).trim();
-  } else {
-    lines.push("#Shafaq_news");
+  let tagLine = "";
+  if (i >= 0 && isTagLine(lines[i])) { tagLine = lines[i].trim(); lines.splice(i, 1); }
+  const tags = ["#Shafaq_news", ...tagLine.split(/\s+/).filter(Boolean)];
+  // fill up to 5 with short tags for places named in the caption
+  const body = lines.join(" ");
+  for (const [re, tagName] of PLACE_TAGS) {
+    if (tags.length >= 5) break;
+    if (re.test(body) && !tags.some((x) => x.toLowerCase() === tagName.toLowerCase())) tags.push(tagName);
   }
-  return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  for (const extra of ["#MiddleEast", "#News"]) {
+    if (tags.length >= 5) break;
+    if (!tags.some((x) => x.toLowerCase() === extra.toLowerCase())) tags.push(extra);
+  }
+  return (lines.join("\n").trim() + "\n" + tags.slice(0, 5).join(" ")).replace(/\n{3,}/g, "\n\n").trim();
 }
 
 // Workers AI models answer in different shapes, read the text from any of them
@@ -482,7 +523,7 @@ Write the caption with these rules:
 - Groups such as the Houthis, IRGC, armed factions: report neutrally, never praise or support them.
 - Never use these words. Use the replacement instead and keep the sentence natural: ${avoidRules || "none"}.
 - Calm wording, nothing graphic or violent. No em dashes. No emojis at all.
-- Then one new line with exactly 5 trending hashtags about the topic. The first one must be #Shafaq_news. Never use these hashtags: ${BLOCKED_HASHTAGS.map((h) => "#" + h).join(" ")}. Use place, country or topic hashtags instead.
+- Then one new line with exactly 5 hashtags. The first one must be #Shafaq_news. The other 4 must be short, popular, high-volume hashtags: countries, cities, regions or broad topics, for example #Iraq #Iran #Israel #USA #MiddleEast #Baghdad #Kurdistan #Oil #Economy. No long or made-up compound hashtags like #USIranTensions or #MiddleEastConflict. Never use these hashtags: ${BLOCKED_HASHTAGS.map((h) => "#" + h).join(" ")}.
 
 Reply with only the caption and the hashtags, nothing else.`;
   const errors = [];
