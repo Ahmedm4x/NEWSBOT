@@ -478,6 +478,18 @@ const PLACE_TAGS = [
   [/\bsecurity\b|\bforces\b|\barmy\b|\battacks?\b|\bstrikes?\b|\bdrones?\b|\bmissiles?\b|\bmines?\b/i, "#Security"],
 ];
 
+// If the text runs past ~260 characters, keep only the first two sentences (hashtag lines untouched)
+function trimToTwoSentences(text) {
+  const lines = text.split("\n");
+  const isTag = (l) => /^\s*#/.test(l);
+  const body = lines.filter((l) => !isTag(l)).join(" ").replace(/\s+/g, " ").trim();
+  const tags = lines.filter(isTag);
+  if (body.length <= 260) return text;
+  const sentences = body.match(/[^.!?]+[.!?]+(\s|$)/g) || [body];
+  const short = sentences.slice(0, 2).join("").trim();
+  return [short || body, ...tags].join("\n");
+}
+
 // Clean up hashtags: one line, exactly 5, #Shafaq_news first, short popular tags only
 function fixHashtags(text) {
   const isTagLine = (l) => l.includes("#") && /^\s*(#[\p{L}\p{N}_]+[\s,]*)+$/u.test(l);
@@ -550,7 +562,7 @@ Title: ${a.title}
 Article: ${(a.summary || "").slice(0, 2000)}
 
 Write the caption with these rules:
-- Short: one or two sentences. A strong, clear first line, then the key fact. A full statement, not a question.
+- Short: one or two short sentences, about 200 characters at most (not counting hashtags). A strong, clear first line, then the key fact. A full statement, not a question.
 - Safe and trendy, written to do well on Instagram Explore, but always accurate. Never add facts that are not in the article.
 - Keep conditions, deadlines and uncertainty exactly as in the article. A warning or a deadline is not a final decision: write "plans to block unless..." not "will block". "Reports" or "allegations" stay reports or allegations.
 - Neutral news-agency tone, like Reuters or BBC. Attribute claims: "X says", "X claims", "according to X". If the article says a claim could not be verified, keep that.
@@ -561,13 +573,13 @@ Write the caption with these rules:
 
 Examples of good captions (follow this style):
 
-Iraq's Communications and Media Commission says it plans to block Telegram unless the platform's operator complies with national regulations within 30 days. The commission cites content it considers a threat to national security.
+Iraq's Communications and Media Commission says it plans to block Telegram unless the platform complies with national rules within 30 days, citing national security concerns.
 #Shafaq_news #Iraq #Telegram #Technology #SocialMedia
 
-Iranian Foreign Ministry spokesperson Esmaeil Baqaei says reports of alleged Iranian plots against US officials are part of a coordinated Israeli disinformation campaign. He claims the aim is to build American and European support for further tensions.
+Iran's Foreign Ministry says reports of alleged Iranian plots against US officials are an Israeli disinformation campaign aimed at building Western support for more tensions.
 #Shafaq_news #Iran #Israel #USA #MiddleEast
 
-Najaf International Airport says it has received no official instructions to resume flights with Iran. A source says Baghdad is talking with Washington about a possible exemption for the airport, though reports of a confirmed exemption are unverified.
+Najaf International Airport says it has no official instructions to resume flights with Iran, as Baghdad discusses a possible exemption with Washington.
 #Shafaq_news #Iraq #Najaf #Iran #IraqNews
 
 Reply with only the caption and the hashtags, nothing else.`;
@@ -618,7 +630,7 @@ Reply with only the story text, nothing else.`;
             .split("\n").map((l) => l.trim().replace(/^["“”']+|["“”']+$/g, "").trim()).filter(Boolean).slice(0, 2).join("\n");
           return { text: story };
         }
-        return { text: fixHashtags(applyAvoidList(clean, avoid)) };
+        return { text: fixHashtags(trimToTwoSentences(applyAvoidList(clean, avoid))) };
       }
       errors.push(`${model.split("/").pop()} sent: ${JSON.stringify(out).slice(0, 150)}`);
     } catch (e) {
