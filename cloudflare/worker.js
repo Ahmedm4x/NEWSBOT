@@ -451,20 +451,28 @@ async function sendOutbox(env) {
 // ---------------- AI caption ----------------
 
 const PLACE_TAGS = [
-  [/\biraq/i, "#Iraq"], [/\biran/i, "#Iran"], [/\bisrael/i, "#Israel"], [/\b(us|usa|united states|american|washington|trump)\b/i, "#USA"],
-  [/\bsyria/i, "#Syria"], [/\blebanon|lebanese/i, "#Lebanon"], [/\bt[uü]rki(ye|sh)|\bturkey/i, "#Turkiye"],
-  [/\bsaudi/i, "#SaudiArabia"], [/\byemen/i, "#Yemen"], [/\bkurdistan|kurdish/i, "#Kurdistan"],
-  [/\bbaghdad/i, "#Baghdad"], [/\berbil/i, "#Erbil"], [/\bbasra/i, "#Basra"], [/\bgaza/i, "#Gaza"],
-  [/\bqatar/i, "#Qatar"], [/\bjordan/i, "#Jordan"], [/\begypt/i, "#Egypt"], [/\brussia/i, "#Russia"], [/\bchina|chinese/i, "#China"],
-  [/\boil\b|crude|opec/i, "#Oil"], [/\beurope|european/i, "#Europe"],
-  // topics
-  [/\btelegram\b/i, "#Telegram"], [/social media|facebook|instagram|tiktok|platform/i, "#SocialMedia"],
-  [/technolog|internet|digital|cyber/i, "#Technology"], [/\bdollar|dinar|currency|exchange rate/i, "#Dollar"],
-  [/\bgold\b/i, "#Gold"], [/econom|market|trade|budget|investment/i, "#Economy"],
-  [/election|vote|ballot/i, "#Elections"], [/parliament|lawmaker|\bmp\b|cabinet|minister|government/i, "#Politics"],
-  [/football|match|league|cup\b|sport/i, "#Sports"], [/water|drought|rain|flood|weather/i, "#Weather"],
-  [/health|hospital|disease|virus/i, "#Health"], [/court|judici|verdict|sentence/i, "#Justice"],
-  [/security|forces|army|attack|strike|drone|missile/i, "#Security"],
+  // places (whole words only, so "waterway" is not "water" and "Ukraine" is not "rain")
+  [/\biraq/i, "#Iraq"], [/\biran/i, "#Iran"], [/\bisrael/i, "#Israel"],
+  [/\b(us|usa|u\.s\.|united states|americans?|washington|trump)\b/i, "#USA"],
+  [/\bsyria/i, "#Syria"], [/\blebanon\b|\blebanese\b/i, "#Lebanon"], [/\bt[uü]rki(ye|sh)\b|\bturkey\b/i, "#Turkiye"],
+  [/\bsaudi\b/i, "#SaudiArabia"], [/\byemen/i, "#Yemen"], [/\bkurdistan\b|\bkurdish\b/i, "#Kurdistan"],
+  [/\bbaghdad\b/i, "#Baghdad"], [/\berbil\b/i, "#Erbil"], [/\bbasra/i, "#Basra"], [/\bgaza\b/i, "#Gaza"],
+  [/\bhormuz\b/i, "#Hormuz"], [/\bqatar/i, "#Qatar"], [/\bjordan/i, "#Jordan"], [/\begypt/i, "#Egypt"],
+  [/\brussia/i, "#Russia"], [/\bchina\b|\bchinese\b/i, "#China"], [/\bukrain/i, "#Ukraine"],
+  [/\beurope|\beuropean\b/i, "#Europe"],
+  // topics (whole words only)
+  [/\boil\b|\bcrude\b|\bopec\b/i, "#Oil"], [/\btankers?\b|\bshipping\b|\bvessels?\b|\bships?\b/i, "#Shipping"],
+  [/\btelegram\b/i, "#Telegram"], [/\bsocial media\b|\bfacebook\b|\binstagram\b|\btiktok\b/i, "#SocialMedia"],
+  [/\btechnology\b|\binternet\b|\bdigital\b|\bcyber/i, "#Technology"],
+  [/\bdollars?\b|\bdinars?\b|\bcurrency\b|\bexchange rate\b/i, "#Dollar"],
+  [/\bgold\b/i, "#Gold"], [/\beconom(y|ic)\b|\bmarkets?\b|\btrade\b|\bbudget\b|\binvestment\b/i, "#Economy"],
+  [/\belections?\b|\bvot(e|es|ing)\b|\bballots?\b/i, "#Elections"],
+  [/\bparliament\b|\blawmakers?\b|\bcabinet\b|\bministers?\b|\bgovernment\b/i, "#Politics"],
+  [/\bfootball\b|\bsoccer\b|\bleague\b|\bsports?\b|\bworld cup\b/i, "#Sports"],
+  [/\bwater\b|\bdrought\b|\brain(fall|s)?\b|\bfloods?\b|\bweather\b|\bheatwave\b/i, "#Weather"],
+  [/\bhealth\b|\bhospitals?\b|\bdisease\b|\bvirus\b/i, "#Health"],
+  [/\bcourt\b|\bjudicia(l|ry)\b|\bverdict\b|\bsentenced?\b/i, "#Justice"],
+  [/\bsecurity\b|\bforces\b|\barmy\b|\battacks?\b|\bstrikes?\b|\bdrones?\b|\bmissiles?\b|\bmines?\b/i, "#Security"],
 ];
 
 // Clean up hashtags: one line, exactly 5, #Shafaq_news first, short popular tags only
