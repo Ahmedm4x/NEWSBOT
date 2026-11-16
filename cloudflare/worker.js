@@ -879,6 +879,17 @@ async function handleMessage(env, msg) {
         let rows = [];
         try { rows = (await env.DB.prepare("SELECT * FROM users ORDER BY joined").all()).results; }
         catch { rows = []; }
+        // ask Telegram for the names we don't have yet (up to 30 at a time)
+        const unknown = rows.filter((r) => !r.name).slice(0, 30);
+        if (unknown.length) {
+          for (const r of unknown) {
+            const info = await tg(env, "getChat", { chat_id: r.chat_id });
+            if (info.ok) {
+              await touchUser(env, r.chat_id, info.result);
+            }
+          }
+          rows = (await env.DB.prepare("SELECT * FROM users ORDER BY joined").all()).results;
+        }
         const day = (ms) => ms ? new Date(ms + 3 * 3600e3).toISOString().slice(5, 10).split("-").reverse().join("/") : "?";
         const lines = rows.slice(0, 60).map((r, i) => {
           const who = r.name ? esc(r.name) : "<i>unknown yet</i>";
@@ -887,7 +898,7 @@ async function handleMessage(env, msg) {
         });
         return say(env, chatId,
           `👥 <b>Users: ${rows.length}</b>\n📨 Waiting to send: ${o.c}\n\n${lines.join("\n")}` +
-          (rows.some((r) => !r.name) ? "\n\n<i>Names show up after each person uses the bot once more.</i>" : ""));
+          (rows.some((r) => !r.name) ? "\n\n<i>Some names couldn't be loaded. Send /stats again in a bit.</i>" : ""));
       }
       return say(env, chatId, "اكتب /help لرؤية الأوامر / Type /help to see the commands.");
 
