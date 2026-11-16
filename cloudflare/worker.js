@@ -481,7 +481,7 @@ Write the caption with these rules:
 - Neutral news-agency tone, like Reuters or BBC. Attribute claims: "X says", "X claims", "according to X". If the article says a claim could not be verified, keep that.
 - Groups such as the Houthis, IRGC, armed factions: report neutrally, never praise or support them.
 - Never use these words. Use the replacement instead and keep the sentence natural: ${avoidRules || "none"}.
-- Calm wording, nothing graphic or violent. No em dashes. At most one emoji.
+- Calm wording, nothing graphic or violent. No em dashes. No emojis at all.
 - Then one new line with exactly 5 trending hashtags about the topic. The first one must be #Shafaq_news. Never use these hashtags: ${BLOCKED_HASHTAGS.map((h) => "#" + h).join(" ")}. Use place, country or topic hashtags instead.
 
 Reply with only the caption and the hashtags, nothing else.`;
@@ -500,7 +500,14 @@ Reply with only the caption and the hashtags, nothing else.`;
       ]);
       const text = readAiText(out);
       if (text) {
-        const clean = text.replace(/\s*[—–]\s*/g, ", ").replace(/^["']|["']$/g, "");
+        const clean = text
+          .replace(/\s*[—–]\s*/g, ", ")
+          .replace(/^["']|["']$/g, "")
+          // remove any emoji the model still added (incl. flags and joined emojis)
+          .replace(/[\p{Extended_Pictographic}\p{Regional_Indicator}\u{FE0F}\u{200D}\u{20E3}\u{1F3FB}-\u{1F3FF}]/gu, "")
+          .replace(/[ \t]{2,}/g, " ")
+          .replace(/ +([.,!?])/g, "$1")
+          .split("\n").map((l) => l.trim()).join("\n");
         return { text: fixHashtags(applyAvoidList(clean, avoid)) };
       }
       errors.push(`${model.split("/").pop()} sent: ${JSON.stringify(out).slice(0, 150)}`);
