@@ -46,7 +46,7 @@ function isBreaking(title, categories, rawBody) {
 }
 const SEND_PER_RUN = 40; // Cloudflare free plan allows 50 outgoing requests per run
 // Free Cloudflare AI models for captions, tried in order
-const CAPTION_MODELS = ["@cf/google/gemma-4-26b-a4b-it", "@cf/zai-org/glm-4.7-flash"];
+const CAPTION_MODELS = ["@cf/google/gemma-4-26b-a4b-it", "@cf/zai-org/glm-4.7-flash", "@cf/meta/llama-3.3-70b-instruct-fp8-fast", "@cf/meta/llama-3.1-8b-instruct"];
 const CAPTIONS_PER_USER_PER_DAY = 30; // safety limit for everyone except the admin
 // Starting word list for captions (avoid -> use instead). Change it in Telegram with /avoid
 const DEFAULT_AVOID = {
@@ -442,6 +442,25 @@ function fixHashtags(text) {
   return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
+// Workers AI models answer in different shapes, read the text from any of them
+function readAiText(out) {
+  if (!out) return "";
+  if (typeof out === "string") return out.trim();
+  const pick = (v) => {
+    if (!v) return "";
+    if (typeof v === "string") return v;
+    if (Array.isArray(v)) return v.map(pick).join("");
+    if (typeof v === "object") return pick(v.text ?? v.content ?? v.response ?? v.output_text ?? "");
+    return "";
+  };
+  let t = pick(out.response) || pick(out.choices?.[0]?.message?.content) || pick(out.choices?.[0]?.text) ||
+    pick(out.output_text) || pick(out.result?.response) ||
+    pick((out.output || []).filter((o) => o.type === "message").map((o) => o.content));
+  // remove a thinking block if the model included it in the answer
+  t = String(t).replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+  return t;
+}
+
 async function makeCaption(env, a) {
   if (!env.AI) return { error: "AI is not connected" };
   const avoid = await getAvoidList(env);
@@ -466,16 +485,17 @@ Reply with only the caption and the hashtags, nothing else.`;
     try {
       const out = await env.AI.run(model, {
         messages: [{ role: "user", content: prompt }],
-        max_tokens: 200,
+        max_tokens: 1500, // room for models that think before answering
       });
-      const text = (out?.response ?? out?.choices?.[0]?.message?.content ?? "").trim();
+      const text = readAiText(out);
       if (text) {
         const clean = text.replace(/\s*[—–]\s*/g, ", ").replace(/^["']|["']$/g, "");
         return { text: fixHashtags(applyAvoidList(clean, avoid)) };
       }
-      lastErr = "empty answer";
+      lastErr = `${model.split("/").pop()} sent: ${JSON.stringify(out).slice(0, 300)}`;
+      console.log("Empty caption:", lastErr);
     } catch (e) {
-      lastErr = String(e.message || e);
+      lastErr = `${model.split("/").pop()}: ${String(e.message || e)}`;
       console.log(`Caption with ${model} failed: ${lastErr}`);
     }
   }
