@@ -29,7 +29,7 @@ jobs:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
           RUN_ONCE: "1"
-          RUN_FOR: "250"   # check every minute for ~4 minutes, then the next run starts
+          RUN_FOR: "0"   # one quick check per run (cron-job.org starts it every 2 minutes)
         run: python bot.py
 
       - name: Save what was already sent
