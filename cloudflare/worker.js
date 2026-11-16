@@ -54,10 +54,15 @@ const DEFAULT_AVOID = {
   kill: "harm",
   killing: "deaths",
   dead: "victims",
-  destroyed: "damaged",
+  destroyed: "hit",
+  destroying: "hitting",
   massacre: "deadly attack",
   bloody: "violent",
+  "ballistic missiles": "missiles",
+  "ballistic missile": "missile",
 };
+// Hashtags never to use (sensitive or designated groups). Keep the name in the text only.
+const BLOCKED_HASHTAGS = ["houthis", "houthi", "irgc", "hezbollah", "hamas", "isis", "daesh", "pkk", "alqaeda", "ansarallah", "kataibhezbollah"];
 
 async function getAvoidList(env) {
   const m = await env.DB.prepare("SELECT v FROM meta WHERE k = 'avoid_words'").first();
@@ -418,21 +423,42 @@ async function sendOutbox(env) {
 
 // ---------------- AI caption ----------------
 
+// remove blocked hashtags and make sure #Shafaq_news is the first hashtag
+function fixHashtags(text) {
+  let out = text.replace(/#([\p{L}\p{N}_]+)/gu, (all, tagName) => {
+    const t = tagName.toLowerCase().replace(/_/g, "");
+    return BLOCKED_HASHTAGS.includes(t) ? "" : all;
+  });
+  out = out.replace(/#shafaq_?news\b/gi, "").replace(/[ \t]{2,}/g, " ");
+  const lines = out.split("\n").map((l) => l.trimEnd());
+  let i = lines.length - 1;
+  while (i >= 0 && !lines[i].trim()) i--;
+  const isTagLine = (l) => /^\s*(#[\p{L}\p{N}_]+\s*)*$/u.test(l) && l.includes("#");
+  if (i >= 0 && (isTagLine(lines[i]) || !lines[i].trim())) {
+    lines[i] = ("#Shafaq_news " + lines[i].trim()).trim();
+  } else {
+    lines.push("#Shafaq_news");
+  }
+  return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 async function makeCaption(env, a) {
   if (!env.AI) return { error: "AI is not connected" };
   const avoid = await getAvoidList(env);
   const avoidRules = Object.entries(avoid).map(([b, g]) => `"${b}" -> "${g}"`).join(", ");
-  const prompt = `Write an Instagram caption for this Shafaq News article.
+  const prompt = `You write Instagram captions for Shafaq News, an Iraqi news agency.
 
 Title: ${a.title}
 Article: ${(a.summary || "").slice(0, 2000)}
 
-Rules:
-- Keep it short: one or two lines, accurate and catchy, safe for Instagram Explore.
+Write the caption with these rules:
+- Short: one or two sentences. A strong, clear first line, then the key fact. A full statement, not a question.
+- Safe and trendy, written to do well on Instagram Explore, but always accurate. Never add facts that are not in the article.
+- Neutral news-agency tone, like Reuters or BBC. Attribute claims: "X says", "X claims", "according to X". If the article says a claim could not be verified, keep that.
+- Groups such as the Houthis, IRGC, armed factions: report neutrally, never praise or support them.
 - Never use these words. Use the replacement instead and keep the sentence natural: ${avoidRules || "none"}.
-- Keep the tone calm and neutral, no graphic or violent wording.
-- No em dashes. At most one emoji.
-- Then one new line with exactly 5 trending hashtags about the topic. The first must be #Shafaq_news.
+- Calm wording, nothing graphic or violent. No em dashes. At most one emoji.
+- Then one new line with exactly 5 trending hashtags about the topic. The first one must be #Shafaq_news. Never use these hashtags: ${BLOCKED_HASHTAGS.map((h) => "#" + h).join(" ")}. Use place, country or topic hashtags instead.
 
 Reply with only the caption and the hashtags, nothing else.`;
   let lastErr = "";
@@ -445,7 +471,7 @@ Reply with only the caption and the hashtags, nothing else.`;
       const text = (out?.response ?? out?.choices?.[0]?.message?.content ?? "").trim();
       if (text) {
         const clean = text.replace(/\s*[—–]\s*/g, ", ").replace(/^["']|["']$/g, "");
-        return { text: applyAvoidList(clean, avoid) };
+        return { text: fixHashtags(applyAvoidList(clean, avoid)) };
       }
       lastErr = "empty answer";
     } catch (e) {
