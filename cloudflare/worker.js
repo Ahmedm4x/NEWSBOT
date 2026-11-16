@@ -205,7 +205,7 @@ async function sendArticle(env, chatId, item) {
 
 // ---------------- cron: check feeds + send ----------------
 
-async function checkFeeds(env) {
+async function checkFeeds(env, report = {}) {
   await setupDb(env);
   const firstRun = !(await env.DB.prepare("SELECT 1 FROM seen LIMIT 1").first());
 
@@ -214,8 +214,13 @@ async function checkFeeds(env) {
   );
   const fresh = [];
   for (const r of results) {
-    if (r.status !== "fulfilled") { console.log("Feed error:", r.reason?.message); continue; }
+    if (r.status !== "fulfilled") {
+      console.log("Feed error:", r.reason?.message);
+      (report.feedErrors ||= []).push(String(r.reason?.message || r.reason));
+      continue;
+    }
     const items = r.value;
+    (report.feedItems ||= []).push(items.length);
     if (!items.length) continue;
     const ids = items.map((i) => i.id);
     const known = new Set();
@@ -263,6 +268,8 @@ async function checkFeeds(env) {
     for (let k = 0; k < stmts.length; k += 50) await env.DB.batch(stmts.slice(k, k + 50));
     console.log(`New articles: ${fresh.length}${firstRun ? " (first run, saved only)" : ""}`);
   }
+  report.firstRun = firstRun;
+  report.newArticles = fresh.length;
 
   await sendOutbox(env);
 
@@ -508,6 +515,26 @@ export default {
         commands: COMMANDS.map(([command, description]) => ({ command, description })),
       });
       return Response.json({ webhook: hook.ok, commands: cmds.ok, details: hook.description || "" });
+    }
+
+    // health check: open https://<your-worker>/debug?key=<WEBHOOK_SECRET>
+    if (url.pathname === "/debug") {
+      if (url.searchParams.get("key") !== env.WEBHOOK_SECRET) return new Response("Wrong key", { status: 403 });
+      const report = {};
+      try {
+        await checkFeeds(env, report);
+      } catch (e) {
+        report.error = String(e.stack || e);
+      }
+      const count = async (t) => (await env.DB.prepare(`SELECT COUNT(*) AS c FROM ${t}`).first()).c;
+      try {
+        report.saved = { seen: await count("seen"), recent: await count("recent"), users: await count("users"), waiting: await count("outbox") };
+      } catch (e) { report.dbError = String(e); }
+      try {
+        const t = await fetch(FEEDS.ar, { headers: { "User-Agent": "Mozilla/5.0 (ShafaqTelegramBot)" } });
+        report.feedTest = { status: t.status, start: (await t.text()).slice(0, 120) };
+      } catch (e) { report.feedTest = String(e); }
+      return Response.json(report);
     }
 
     if (url.pathname === "/telegram" && request.method === "POST") {
