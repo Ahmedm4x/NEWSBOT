@@ -130,9 +130,17 @@ def main():
     seen = load_seen()
     first_run = not seen
 
-    # GitHub Actions mode: check one time and exit (GitHub runs it every few minutes)
+    # GitHub Actions mode: started every 5 minutes, checks every minute
+    # for RUN_FOR seconds, then exits so the next run can take over
     if os.getenv("RUN_ONCE"):
-        check_once(seen, first_run)
+        run_for = int(os.getenv("RUN_FOR", "0"))
+        start = time.time()
+        while True:
+            check_once(seen, first_run)
+            first_run = False
+            if time.time() - start + CHECK_EVERY_SECONDS > run_for:
+                break
+            time.sleep(CHECK_EVERY_SECONDS)
         return
 
     print("Bot started. Checking every", CHECK_EVERY_SECONDS, "seconds.")
