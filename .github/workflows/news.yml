@@ -28,6 +28,7 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           RUN_ONCE: "1"
           RUN_FOR: "0"   # one quick check per run (cron-job.org starts it every 2 minutes)
         run: python bot.py
@@ -36,7 +37,7 @@ jobs:
         run: |
           git config user.name "news-bot"
           git config user.email "news-bot@users.noreply.github.com"
-          git add seen.json
+          git add seen.json state.json
           if ! git diff --cached --quiet; then
             git commit -m "update seen"
             for i in 1 2 3; do
