@@ -1,6 +1,5 @@
 {
  "offset": 54896176,
- "paused_until": 0,
  "lang": "both",
  "only": [],
  "keywords": [],
@@ -30,5 +29,5 @@
    "lang": "en"
   }
  ],
- "commands_v": 1
+ "commands_v": 2
 }
