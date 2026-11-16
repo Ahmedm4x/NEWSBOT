@@ -308,7 +308,10 @@ function buildText(item, limit) {
 async function sendArticle(env, chatId, item) {
   const silent = !(item.breaking || item.hits?.length);
   const captionRow = item.lang === "en"
-    ? [[{ text: "✍️ Caption", callback_data: "cap:" + shortHash(item.id) }]] : [];
+    ? [[
+        { text: "✍️ Caption", callback_data: "cap:" + shortHash(item.id) },
+        { text: "📱 Story", callback_data: "sty:" + shortHash(item.id) },
+      ]] : [];
   const reply_markup = {
     inline_keyboard: [[
       { text: "📋 نسخ / Copy", copy_text: { text: `${item.title}\n${item.link}`.slice(0, 256) } },
@@ -537,11 +540,11 @@ function readAiText(out) {
   return t;
 }
 
-async function makeCaption(env, a) {
+async function makeCaption(env, a, mode = "post") {
   if (!env.AI) return { error: "AI is not connected" };
   const avoid = await getAvoidList(env);
   const avoidRules = Object.entries(avoid).map(([b, g]) => `"${b}" -> "${g}"`).join(", ");
-  const prompt = `You write Instagram captions for Shafaq News, an Iraqi news agency.
+  const postPrompt = `You write Instagram captions for Shafaq News, an Iraqi news agency.
 
 Title: ${a.title}
 Article: ${(a.summary || "").slice(0, 2000)}
@@ -568,6 +571,25 @@ Najaf International Airport says it has received no official instructions to res
 #Shafaq_news #Iraq #Najaf #Iran #IraqNews
 
 Reply with only the caption and the hashtags, nothing else.`;
+  const storyPrompt = `You write Instagram STORY text for Shafaq News, an Iraqi news agency.
+
+Title: ${a.title}
+Article: ${(a.summary || "").slice(0, 2000)}
+
+Write the story text with these rules:
+- Very short: one or two short lines that sum up the whole article. Under 120 characters in total.
+- Clear and catchy, but accurate. Never add facts that are not in the article. Keep conditions and deadlines as in the article.
+- Neutral tone. Attribute claims briefly ("Iran says", "Army: ...").
+- Never use these words. Use the replacement instead: ${avoidRules || "none"}.
+- Nothing graphic or violent. No hashtags. No emojis. No em dashes. No quotation marks around the whole text.
+
+Examples:
+Iraq gives Telegram 30 days to meet its rules or face a ban.
+Iran says a third tanker caught fire near Hormuz after hitting a sea mine.
+Najaf airport: no official order yet to resume flights with Iran.
+
+Reply with only the story text, nothing else.`;
+  const prompt = mode === "story" ? storyPrompt : postPrompt;
   const errors = [];
   const started = Date.now();
   for (const model of CAPTION_MODELS) {
@@ -577,7 +599,7 @@ Reply with only the caption and the hashtags, nothing else.`;
       const out = await Promise.race([
         env.AI.run(model, {
           messages: [{ role: "user", content: prompt }],
-          max_tokens: 400,
+          max_tokens: mode === "story" ? 120 : 400,
         }),
         new Promise((_, rej) => setTimeout(() => rej(new Error("took too long")), Math.min(left, 10000))),
       ]);
@@ -591,6 +613,11 @@ Reply with only the caption and the hashtags, nothing else.`;
           .replace(/[ \t]{2,}/g, " ")
           .replace(/ +([.,!?])/g, "$1")
           .split("\n").map((l) => l.trim()).join("\n");
+        if (mode === "story") {
+          const story = applyAvoidList(clean, avoid).replace(/#[\p{L}\p{N}_]+/gu, "").replace(/[ \t]{2,}/g, " ")
+            .split("\n").map((l) => l.trim().replace(/^["“”']+|["“”']+$/g, "").trim()).filter(Boolean).slice(0, 2).join("\n");
+          return { text: story };
+        }
         return { text: fixHashtags(applyAvoidList(clean, avoid)) };
       }
       errors.push(`${model.split("/").pop()} sent: ${JSON.stringify(out).slice(0, 150)}`);
@@ -602,15 +629,16 @@ Reply with only the caption and the hashtags, nothing else.`;
   return { error: errors.join("\n") || "no model answered in time" };
 }
 
-async function handleCaption(env, cq, chatId, h) {
+async function handleCaption(env, cq, chatId, h, mode = "post") {
+  const prefix = mode === "story" ? "sty:" : "cap:";
   await tg(env, "answerCallbackQuery", { callback_query_id: cq.id, text: "✍️ ..." });
   const a = await env.DB.prepare("SELECT * FROM articles WHERE h = ?").bind(h).first();
   if (!a) return say(env, chatId, "This article is too old for a caption.");
 
-  const wait = await say(env, chatId, "✍️ Writing caption...", {
+  const wait = await say(env, chatId, mode === "story" ? "📱 Writing story text..." : "✍️ Writing caption...", {
     reply_parameters: { message_id: cq.message.message_id, allow_sending_without_reply: true },
   });
-  const r = await makeCaption(env, a);
+  const r = await makeCaption(env, a, mode);
 
   // remember the last attempt so /debug can show it
   try {
@@ -622,12 +650,12 @@ async function handleCaption(env, cq, chatId, h) {
   if (r.error) {
     const limit = /limit|quota|neuron|429|exceed/i.test(r.error);
     text = limit ? "Daily free AI limit reached. Try again tomorrow." : "Couldn't write a caption: " + esc(r.error.slice(0, 300));
-    reply_markup = { inline_keyboard: [[{ text: "🔄 Try again", callback_data: "cap:" + h }]] };
+    reply_markup = { inline_keyboard: [[{ text: "🔄 Try again", callback_data: prefix + h }]] };
   } else {
     text = `<pre>${esc(r.text)}</pre>`;
     reply_markup = { inline_keyboard: [[
       ...(r.text.length <= 256 ? [{ text: "📋 Copy", copy_text: { text: r.text } }] : []),
-      { text: "🔄 Another one", callback_data: "cap:" + h },
+      { text: "🔄 Another one", callback_data: prefix + h },
     ]] };
   }
   if (wait.ok) {
@@ -825,7 +853,7 @@ async function handleCallback(env, cq) {
   const data = cq.data || "";
   let toast = "✅";
 
-  if (data.startsWith("cap:")) {
+  if (data.startsWith("cap:") || data.startsWith("sty:")) {
     const isAdmin = env.ADMIN_ID && chatId === String(env.ADMIN_ID);
     if (!isAdmin) {
       const day = new Date().toISOString().slice(0, 10);
@@ -839,7 +867,7 @@ async function handleCallback(env, cq) {
         env.DB.prepare("DELETE FROM caption_use WHERE day < ?").bind(new Date(Date.now() - 2 * 864e5).toISOString().slice(0, 10)),
       ]);
     }
-    return handleCaption(env, cq, chatId, data.slice(4));
+    return handleCaption(env, cq, chatId, data.slice(4), data.startsWith("sty:") ? "story" : "post");
   }
 
   if (data.startsWith("lang:")) {
