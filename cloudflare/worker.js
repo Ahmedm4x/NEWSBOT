@@ -17,7 +17,23 @@ const FEEDS = {
   ar: "https://shafaq.com/rss/ar",
   en: "https://shafaq.com/rss/en",
 };
-const BREAKING_WORDS = ["عاجل", "breaking", "urgent"];
+// Breaking news markers: the #عاجل / #breaking hashtag or tag anywhere in the item,
+// a category called عاجل / Breaking, or a headline that starts with عاجل / Breaking
+const BREAKING_TAGS = ["عاجل", "breaking", "breaking news", "breakingnews", "urgent"];
+
+function safeDecodeURI(s) {
+  try { return decodeURIComponent(s); } catch { return s; }
+}
+
+function isBreaking(title, categories, rawBody) {
+  const t = title.trim().toLowerCase();
+  if (/^(🔴\s*)?(عاجل|breaking|urgent)(?![a-z])/.test(t)) return true;
+  if (categories.some((c) => BREAKING_TAGS.includes(c.trim().toLowerCase()))) return true;
+  const text = safeDecodeURI(decodeEntities(rawBody)).toLowerCase();
+  if (/#\s?(عاجل|breaking_?news|breaking|urgent)/.test(text)) return true;
+  if (/\/tags?\/(عاجل|breaking[-_ ]?news|breaking|urgent)(?=[\/"'?#&\s<]|$)/.test(text)) return true;
+  return false;
+}
 const SEND_PER_RUN = 40; // Cloudflare free plan allows 50 outgoing requests per run
 const LANG_NAMES = { ar: "العربية", en: "English", both: "العربية + English" };
 
@@ -98,6 +114,7 @@ async function setupDb(env) {
     env.DB.prepare("CREATE TABLE IF NOT EXISTS users (chat_id TEXT PRIMARY KEY, lang TEXT DEFAULT 'both', only TEXT DEFAULT '[]', keywords TEXT DEFAULT '[]', joined INTEGER)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS outbox (n INTEGER PRIMARY KEY AUTOINCREMENT, chat_id TEXT, item TEXT, created INTEGER)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS breaking_log (id TEXT PRIMARY KEY, title TEXT, ts INTEGER)"),
   ]);
 }
 
@@ -140,11 +157,16 @@ async function fetchFeed(lang, url) {
 function parseItem(raw) {
   const body = raw.xml.slice(raw.start, raw.end);
   const enc = body.match(/<enclosure[^>]*url="([^"]+)"/i);
+  const categories = [...body.matchAll(/<category[^>]*>([\s\S]*?)<\/category>/gi)]
+    .map((m) => decodeEntities(m[1].replace(/^\s*<!\[CDATA\[([\s\S]*?)\]\]>\s*$/, "$1").trim()));
+  const title = decodeEntities(tag(body, "title"));
   return {
+    breaking: isBreaking(title, categories, body),
+    categories,
     id: raw.id, lang: raw.lang,
     link: decodeEntities(tag(body, "link")) || raw.id,
-    title: decodeEntities(tag(body, "title")),
-    category: decodeEntities(tag(body, "category")),
+    title,
+    category: categories[0] || "",
     image: enc ? decodeEntities(enc[1]) : null,
     summary: cleanText(tag(body, "description") || tag(body, "content:encoded")),
   };
@@ -247,6 +269,9 @@ async function checkFeeds(env, report = {}) {
     for (const i of fresh) {
       stmts.push(env.DB.prepare("INSERT OR IGNORE INTO seen (id, ts) VALUES (?, ?)").bind(i.id, now));
       if (i.skipRecent) continue;
+      if (i.breaking) {
+        stmts.push(env.DB.prepare("INSERT OR IGNORE INTO breaking_log (id, title, ts) VALUES (?, ?, ?)").bind(i.id, i.title, now));
+      }
       stmts.push(env.DB.prepare(
         "INSERT OR IGNORE INTO recent (id, title, link, category, lang, ts) VALUES (?, ?, ?, ?, ?, ?)"
       ).bind(i.id, i.title, i.link, i.category, i.lang, now));
@@ -256,7 +281,7 @@ async function checkFeeds(env, report = {}) {
         ...u, only: JSON.parse(u.only || "[]"), keywords: JSON.parse(u.keywords || "[]"),
       }));
       for (const i of fresh) {
-        const breaking = BREAKING_WORDS.some((w) => i.title.toLowerCase().includes(w));
+        const breaking = !!i.breaking;
         const text = (i.title + " " + i.summary).toLowerCase();
         for (const u of users) {
           if (!wanted(i, u)) continue;
@@ -531,6 +556,11 @@ export default {
       try {
         report.saved = { seen: await count("seen"), recent: await count("recent"), users: await count("users"), waiting: await count("outbox") };
       } catch (e) { report.dbError = String(e); }
+      try {
+        report.breakingSeen = (await env.DB.prepare("SELECT title FROM breaking_log ORDER BY ts DESC LIMIT 5").all()).results.map((r) => r.title);
+        const sample = (await fetchFeed("ar", FEEDS.ar)).slice(-3).map(parseItem);
+        report.latestArabic = sample.map((i) => ({ title: i.title, categories: i.categories, breaking: i.breaking }));
+      } catch (e) { report.sampleError = String(e); }
       try {
         const t = await fetch(FEEDS.ar, { headers: { "User-Agent": "Mozilla/5.0 (ShafaqTelegramBot)" } });
         report.feedTest = { status: t.status, start: (await t.text()).slice(0, 120) };
