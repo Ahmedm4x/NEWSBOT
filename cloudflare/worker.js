@@ -115,6 +115,7 @@ async function setupDb(env) {
     env.DB.prepare("CREATE TABLE IF NOT EXISTS outbox (n INTEGER PRIMARY KEY AUTOINCREMENT, chat_id TEXT, item TEXT, created INTEGER)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS breaking_log (id TEXT PRIMARY KEY, title TEXT, ts INTEGER)"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS delay_log (id TEXT PRIMARY KEY, title TEXT, pub INTEGER, found INTEGER, sent INTEGER)"),
   ]);
 }
 
@@ -137,7 +138,13 @@ const newUser = (chatId) => ({ chat_id: String(chatId), lang: "both", only: [], 
 
 // Step 1: split the feed into items and read only their ids (cheap)
 async function fetchFeed(lang, url) {
-  const r = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0 (ShafaqTelegramBot)" } });
+  const opts = {
+    headers: { "User-Agent": "Mozilla/5.0 (ShafaqTelegramBot)", "Cache-Control": "no-cache", Pragma: "no-cache" },
+    cf: { cacheTtl: 0, cacheEverything: false },
+  };
+  // ask for a fresh copy every time (skip any cache), fall back to the plain URL if that fails
+  let r = await fetch(`${url}?nocache=${Date.now()}`, opts);
+  if (!r.ok) r = await fetch(url, opts);
   if (!r.ok) throw new Error(`${url} returned ${r.status}`);
   const xml = await r.text();
   const items = [];
@@ -162,6 +169,7 @@ function parseItem(raw) {
   const title = decodeEntities(tag(body, "title"));
   return {
     breaking: isBreaking(title, categories, body),
+    pub: Date.parse(decodeEntities(tag(body, "pubDate"))) || 0,
     categories,
     id: raw.id, lang: raw.lang,
     link: decodeEntities(tag(body, "link")) || raw.id,
@@ -269,6 +277,9 @@ async function checkFeeds(env, report = {}) {
     for (const i of fresh) {
       stmts.push(env.DB.prepare("INSERT OR IGNORE INTO seen (id, ts) VALUES (?, ?)").bind(i.id, now));
       if (i.skipRecent) continue;
+      if (!firstRun && i.pub) {
+        stmts.push(env.DB.prepare("INSERT OR IGNORE INTO delay_log (id, title, pub, found) VALUES (?, ?, ?, ?)").bind(i.id, i.title, i.pub, now));
+      }
       if (i.breaking) {
         stmts.push(env.DB.prepare("INSERT OR IGNORE INTO breaking_log (id, title, ts) VALUES (?, ?, ?)").bind(i.id, i.title, now));
       }
@@ -304,6 +315,7 @@ async function checkFeeds(env, report = {}) {
   await env.DB.batch([
     env.DB.prepare("DELETE FROM seen WHERE ts < ?").bind(Date.now() - 4 * day),
     env.DB.prepare("DELETE FROM outbox WHERE created < ?").bind(Date.now() - day),
+    env.DB.prepare("DELETE FROM delay_log WHERE found < ?").bind(Date.now() - 2 * day),
     env.DB.prepare("DELETE FROM recent WHERE id NOT IN (SELECT id FROM recent ORDER BY ts DESC, rowid DESC LIMIT 60)"),
   ]);
 }
@@ -312,7 +324,11 @@ async function sendOutbox(env) {
   const rows = (await env.DB.prepare("SELECT * FROM outbox ORDER BY n LIMIT ?").bind(SEND_PER_RUN).all()).results;
   const done = [];
   for (const row of rows) {
-    const res = await sendArticle(env, row.chat_id, JSON.parse(row.item));
+    const item = JSON.parse(row.item);
+    const res = await sendArticle(env, row.chat_id, item);
+    if (res.ok) {
+      await env.DB.prepare("UPDATE delay_log SET sent = ? WHERE id = ? AND sent IS NULL").bind(Date.now(), item.id).run();
+    }
     if (res.status === 429) break; // Telegram says slow down, try the rest next minute
     done.push(row.n);
     if (res.status === 403) {
@@ -557,6 +573,13 @@ export default {
         report.saved = { seen: await count("seen"), recent: await count("recent"), users: await count("users"), waiting: await count("outbox") };
       } catch (e) { report.dbError = String(e); }
       try {
+        const mins = (ms) => Math.round(ms / 6000) / 10;
+        report.delays = (await env.DB.prepare("SELECT * FROM delay_log ORDER BY found DESC LIMIT 10").all()).results.map((d) => ({
+          title: d.title.slice(0, 60),
+          published: new Date(d.pub).toISOString().slice(11, 19),
+          feedDelayMin: mins(d.found - d.pub),
+          sendDelayMin: d.sent ? mins(d.sent - d.found) : null,
+        }));
         report.breakingSeen = (await env.DB.prepare("SELECT title FROM breaking_log ORDER BY ts DESC LIMIT 5").all()).results.map((r) => r.title);
         const sample = (await fetchFeed("ar", FEEDS.ar)).slice(-3).map(parseItem);
         report.latestArabic = sample.map((i) => ({ title: i.title, categories: i.categories, breaking: i.breaking }));
