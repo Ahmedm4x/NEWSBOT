@@ -25,6 +25,16 @@ function safeDecodeURI(s) {
   try { return decodeURIComponent(s); } catch { return s; }
 }
 
+// Shafaq's breaking flashes have no article body: the text is just the headline again
+const norm = (s) => String(s || "").toLowerCase().replace(/[\s"'“”«».,،:؛!?؟\-–—|()\[\]]/g, "");
+function textIsJustHeadline(title, summary) {
+  // ignore a "شفق نيوز- بغداد" / "Shafaq News- Baghdad" dateline line
+  const body = String(summary || "").split("\n").filter((l) => !/^\s*(شفق\s*نيوز|shafaq\s*news)\s*[-–—/]/i.test(l)).join(" ");
+  const t = norm(title), b = norm(body);
+  if (!t) return false;
+  return !b || b === t || (b.startsWith(t) && b.length - t.length < 25);
+}
+
 function isBreaking(title, categories, rawBody) {
   const t = title.trim().toLowerCase();
   if (/^(🔴\s*)?(عاجل|breaking|urgent)(?![a-z])/.test(t)) return true;
@@ -167,8 +177,10 @@ function parseItem(raw) {
   const categories = [...body.matchAll(/<category[^>]*>([\s\S]*?)<\/category>/gi)]
     .map((m) => decodeEntities(m[1].replace(/^\s*<!\[CDATA\[([\s\S]*?)\]\]>\s*$/, "$1").trim()));
   const title = decodeEntities(tag(body, "title"));
+  const summary = cleanText(tag(body, "description") || tag(body, "content:encoded"));
+  const flash = textIsJustHeadline(title, summary);
   return {
-    breaking: isBreaking(title, categories, body),
+    breaking: flash || isBreaking(title, categories, body),
     pub: Date.parse(decodeEntities(tag(body, "pubDate"))) || 0,
     categories,
     id: raw.id, lang: raw.lang,
@@ -176,7 +188,7 @@ function parseItem(raw) {
     title,
     category: categories[0] || "",
     image: enc ? decodeEntities(enc[1]) : null,
-    summary: cleanText(tag(body, "description") || tag(body, "content:encoded")),
+    summary: flash ? "" : summary,   // don't repeat the headline as the text
   };
 }
 
@@ -582,7 +594,7 @@ export default {
         }));
         report.breakingSeen = (await env.DB.prepare("SELECT title FROM breaking_log ORDER BY ts DESC LIMIT 5").all()).results.map((r) => r.title);
         const sample = (await fetchFeed("ar", FEEDS.ar)).slice(-3).map(parseItem);
-        report.latestArabic = sample.map((i) => ({ title: i.title, categories: i.categories, breaking: i.breaking }));
+        report.latestArabic = sample.map((i) => ({ title: i.title, categories: i.categories, breaking: i.breaking, image: i.image }));
       } catch (e) { report.sampleError = String(e); }
       try {
         const t = await fetch(FEEDS.ar, { headers: { "User-Agent": "Mozilla/5.0 (ShafaqTelegramBot)" } });
