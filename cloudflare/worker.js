@@ -73,9 +73,24 @@ const DEFAULT_AVOID = {
   wars: "conflicts",
   escalation: "tensions",
   escalations: "tensions",
+  // Arabic
+  "مقتل": "مصرع",
+  "قتلى": "ضحايا",
+  "قتيل": "ضحية",
+  "قتل": "أودى بحياة",
+  "دمار": "أضرار",
+  "تدمير": "استهداف",
+  "مجزرة": "هجوم",
+  "اغتيال": "استهداف",
+  "صواريخ باليستية": "صواريخ",
+  "صاروخ باليستي": "صاروخ",
+  "تصعيد": "توتر",
+  "دماء": "ضحايا",
 };
+const isArabic = (s) => /[\u0600-\u06FF]/.test(s);
 // Hashtags never to use (sensitive or designated groups). Keep the name in the text only.
-const BLOCKED_HASHTAGS = ["houthis", "houthi", "irgc", "hezbollah", "hamas", "isis", "daesh", "pkk", "alqaeda", "ansarallah", "kataibhezbollah"];
+const BLOCKED_HASHTAGS = ["houthis", "houthi", "irgc", "hezbollah", "hamas", "isis", "daesh", "pkk", "alqaeda", "ansarallah", "kataibhezbollah",
+  "الحوثيين", "الحوثي", "الحوثيون", "الحرسالثوري", "حزبالله", "حماس", "داعش", "القاعدة", "انصارالله", "أنصارالله", "كتائبحزبالله", "العمالالكردستاني"];
 
 // The saved list stores only your changes: words you added or changed, and words you removed.
 // Starting words are always included unless you removed them.
@@ -111,6 +126,11 @@ function applyAvoidList(text, list) {
     out = out.replace(new RegExp(`\\s?#[\\p{L}\\p{N}_]*${escRe(bad)}[\\p{L}\\p{N}_]*`, "giu"), "");
   }
   for (const [bad, good] of Object.entries(list)) {
+    if (isArabic(bad)) {
+      const reAr = new RegExp(`(^|[^\\p{L}#])((?:[وف])?(?:[بلك])?(?:ال)?)(${escRe(bad)})(?=$|[^\\p{L}])`, "gu");
+      out = out.replace(reAr, (all, pre, prefix) => pre + prefix + good);
+      continue;
+    }
     const re = new RegExp(`(^|[^\\p{L}#])(${escRe(bad)})(?=$|[^\\p{L}])`, "giu");
     out = out.replace(re, (all, pre, word) => {
       const rep = word[0] === word[0].toUpperCase() && word[0] !== word[0].toLowerCase()
@@ -332,11 +352,10 @@ function buildText(item, limit) {
 
 async function sendArticle(env, chatId, item) {
   const silent = !(item.breaking || item.hits?.length);
-  const captionRow = item.lang === "en"
-    ? [[
-        { text: "✍️ Caption", callback_data: "cap:" + shortHash(item.id) },
-        { text: "📱 Story", callback_data: "sty:" + shortHash(item.id) },
-      ]] : [];
+  const captionRow = [[
+    { text: item.lang === "ar" ? "✍️ كابشن" : "✍️ Caption", callback_data: "cap:" + shortHash(item.id) },
+    { text: item.lang === "ar" ? "📱 ستوري" : "📱 Story", callback_data: "sty:" + shortHash(item.id) },
+  ]];
   const reply_markup = {
     inline_keyboard: [[
       { text: "📋 نسخ / Copy", copy_text: { text: `${item.title}\n${item.link}`.slice(0, 256) } },
@@ -404,7 +423,7 @@ async function checkFeeds(env, report = {}) {
     for (const i of fresh) {
       stmts.push(env.DB.prepare("INSERT OR IGNORE INTO seen (id, ts) VALUES (?, ?)").bind(i.id, now));
       if (i.skipRecent) continue;
-      if (i.lang === "en") {
+      {
         stmts.push(env.DB.prepare("INSERT OR IGNORE INTO articles (h, title, summary, lang, ts) VALUES (?, ?, ?, ?, ?)")
           .bind(shortHash(i.id), i.title, (i.summary || "").slice(0, 2500), i.lang, now));
       }
@@ -503,6 +522,23 @@ const PLACE_TAGS = [
   [/\bsecurity\b|\bforces\b|\barmy\b|\battacks?\b|\bstrikes?\b|\bdrones?\b|\bmissiles?\b|\bmines?\b/i, "#Security"],
 ];
 
+const PLACE_TAGS_AR = [
+  [/العراق|عراقي/, "#العراق"], [/إيران|ايران|إيراني|ايراني/, "#إيران"], [/إسرائيل|اسرائيل|إسرائيلي/, "#إسرائيل"],
+  [/أمريك|امريك|واشنطن|الولايات المتحدة|ترامب/, "#أمريكا"], [/سوري/, "#سوريا"], [/لبنان|لبناني/, "#لبنان"],
+  [/تركيا|تركي/, "#تركيا"], [/السعودي/, "#السعودية"], [/اليمن|يمني/, "#اليمن"], [/كوردستان|كردستان|كوردي|كردي/, "#كوردستان"],
+  [/بغداد/, "#بغداد"], [/أربيل|اربيل/, "#أربيل"], [/البصرة/, "#البصرة"], [/الموصل|نينوى/, "#نينوى"], [/السليمانية/, "#السليمانية"],
+  [/كركوك/, "#كركوك"], [/النجف/, "#النجف"], [/كربلاء/, "#كربلاء"], [/ديالى/, "#ديالى"], [/الأنبار|الانبار/, "#الأنبار"],
+  [/هرمز/, "#هرمز"], [/غزة/, "#غزة"], [/(?<!\p{L})[وفبل]?(?:ال)?قطر(?:ي|ية)?(?!\p{L})/u, "#قطر"], [/الأردن|الاردن/, "#الأردن"],
+  [/(?<!\p{L})[وفبل]?(?:ال)?مصر(?:ي|ية)?(?!\p{L})/u, "#مصر"], [/روسيا/, "#روسيا"], [/الصين/, "#الصين"],
+  [/النفط|نفطي|الخام/, "#النفط"], [/ناقلة|ناقلات|سفينة|سفن|الملاحة/, "#الملاحة"], [/الدولار|الدينار|العملة|الصرف/, "#الدولار"],
+  [/الذهب/, "#الذهب"], [/اقتصاد|الأسواق|السوق|تجار|موازنة|استثمار/, "#اقتصاد"], [/انتخاب|الاقتراع/, "#الانتخابات"],
+  [/البرلمان|مجلس النواب|نائب|الحكومة|وزير|رئيس الوزراء/, "#سياسة"], [/تلغرام|تليغرام/, "#تلغرام"],
+  [/مواقع التواصل|فيسبوك|انستغرام|تيك توك|منصة/, "#سوشيال_ميديا"], [/رياض|كرة القدم|المنتخب|الدوري/, "#رياضة"],
+  [/أمطار|امطار|طقس|الأنواء|فيضان|جفاف|المياه/, "#الطقس"], [/صحة|مستشفى|مرض|فيروس/, "#صحة"],
+  [/محكمة|القضاء|(?<!\p{L})[وفب]?(?:ال)?حكم(?:اً|ا)?(?!\p{L})|السجن/u, "#القضاء"],
+  [/(?<!\p{L})[وفبل]?(?:ال)?أمن(?:ي|ية)?(?!\p{L})|القوات|الجيش|هجوم|قصف|طائرة مسيرة|مسيّرة/u, "#أمن"],
+];
+
 // If the text runs past ~260 characters, keep only the first two sentences (hashtag lines untouched)
 function trimToTwoSentences(text) {
   const lines = text.split("\n");
@@ -510,13 +546,15 @@ function trimToTwoSentences(text) {
   const body = lines.filter((l) => !isTag(l)).join(" ").replace(/\s+/g, " ").trim();
   const tags = lines.filter(isTag);
   if (body.length <= 260) return text;
-  const sentences = body.match(/[^.!?]+[.!?]+(\s|$)/g) || [body];
+  const sentences = body.match(/[^.!?؟]+[.!?؟]+(\s|$)/g) || [body];
   const short = sentences.slice(0, 2).join("").trim();
   return [short || body, ...tags].join("\n");
 }
 
 // Clean up hashtags: one line, exactly 5, #Shafaq_news first, short popular tags only
-function fixHashtags(text) {
+function fixHashtags(text, lang = "en") {
+  const ar = lang === "ar";
+  const FIRST = ar ? "#شفق_نيوز" : "#Shafaq_news";
   const isTagLine = (l) => l.includes("#") && /^\s*(#[\p{L}\p{N}_]+[\s,]*)+$/u.test(l);
   const lines = text.split("\n").map((l) => l.trim());
   const found = [];
@@ -534,23 +572,28 @@ function fixHashtags(text) {
   }
   const good = (tg) => {
     const t = tg.slice(1);
-    if (/^shafaq_?news$/i.test(t)) return false;              // added first below
+    if (/^shafaq_?news$/i.test(t) || /^شفق_?نيوز$/.test(t)) return false; // added first below
     if (BLOCKED_HASHTAGS.includes(t.toLowerCase().replace(/_/g, ""))) return false;
+    if (ar) {
+      if (!isArabic(t)) return false;                         // Arabic captions get Arabic tags
+      if (t.length > 20) return false;
+      return true;
+    }
     if (t.includes("_")) return false;                        // #Telegram_ban, #Iraq_news style
     if (t.length > 12) return false;                          // long, low-volume tags
     return true;
   };
-  const tags = ["#Shafaq_news"];
+  const tags = [FIRST];
   for (const tg of found) {
     if (tags.length >= 5) break;
     if (good(tg) && !tags.some((x) => x.toLowerCase() === tg.toLowerCase())) tags.push(tg);
   }
   const body = textLines.join(" ");
-  for (const [re, tagName] of PLACE_TAGS) {
+  for (const [re, tagName] of (ar ? PLACE_TAGS_AR : PLACE_TAGS)) {
     if (tags.length >= 5) break;
     if (re.test(body) && !tags.some((x) => x.toLowerCase() === tagName.toLowerCase())) tags.push(tagName);
   }
-  for (const extra of ["#MiddleEast", "#News", "#IraqNews", "#Breaking"]) {
+  for (const extra of (ar ? ["#اخبار_العراق", "#الشرق_الأوسط", "#أخبار"] : ["#MiddleEast", "#News", "#IraqNews", "#Breaking"])) {
     if (tags.length >= 5) break;
     if (!tags.some((x) => x.toLowerCase() === extra.toLowerCase())) tags.push(extra);
   }
@@ -580,7 +623,8 @@ function readAiText(out) {
 async function makeCaption(env, a, mode = "post") {
   if (!env.AI) return { error: "AI is not connected" };
   const avoid = await getAvoidList(env);
-  const avoidRules = Object.entries(avoid).map(([b, g]) => `"${b}" -> "${g}"`).join(", ");
+  const ar = a.lang === "ar";
+  const avoidRules = Object.entries(avoid).filter(([b]) => isArabic(b) === ar).map(([b, g]) => `"${b}" -> "${g}"`).join(", ");
   const postPrompt = `You write Instagram captions for Shafaq News, an Iraqi news agency.
 
 Title: ${a.title}
@@ -626,7 +670,52 @@ Iran says a third tanker caught fire near Hormuz after hitting a sea mine.
 Najaf airport: no official order yet to resume flights with Iran.
 
 Reply with only the story text, nothing else.`;
-  const prompt = mode === "story" ? storyPrompt : postPrompt;
+  const postPromptAr = `أنت تكتب كابشن إنستغرام لوكالة شفق نيوز العراقية.
+
+العنوان: ${a.title}
+الخبر: ${(a.summary || a.title).slice(0, 2000)}
+
+اكتب الكابشن بالعربية الفصحى المبسطة وفق هذه القواعد:
+- قصير: جملة أو جملتان قصيرتان، حوالي 200 حرف كحد أقصى (بدون الهاشتاكات). أول جملة قوية وواضحة. جملة خبرية وليست سؤالاً.
+- آمن وجذاب ومناسب لظهور المنشور في Explore، لكن دقيق دائماً. لا تضف أي معلومة غير موجودة في الخبر.
+- حافظ على الشروط والمهل وعدم التأكد كما هي في الخبر. التحذير أو المهلة ليس قراراً نهائياً.
+- أسلوب وكالة أنباء محايد. انسب التصريحات لأصحابها: "قال"، "أعلن"، "بحسب"، "زعم".
+- الجماعات مثل الحوثيين والحرس الثوري والفصائل المسلحة: صياغة محايدة، بلا مدح أو دعم.
+- لا تستخدم هذه الكلمات أبداً، استخدم البديل مع الحفاظ على سلاسة الجملة: ${avoidRules || "لا شيء"}.
+- صياغة هادئة بلا عنف أو مشاهد قاسية. بدون إيموجي. بدون شرطة طويلة.
+- ثم سطر واحد جديد فيه 5 هاشتاكات بالعربية بالضبط، كلها في نفس السطر ومفصولة بمسافات. أول هاشتاك يجب أن يكون #شفق_نيوز. البقية قصيرة ومشهورة: دول، مدن، مواضيع عامة، مثل #العراق #بغداد #إيران #النفط #الدولار #اقتصاد #أربيل. لا تستخدم هذه الهاشتاكات أبداً: #الحوثيين #الحرس_الثوري #حزب_الله #حماس #داعش.
+
+أمثلة على كابشن جيد (اتبع نفس الأسلوب):
+
+هيئة الإعلام والاتصالات تمهل تلغرام 30 يوماً لتسوية وضعه القانوني في العراق، وإلا سيتم حجبه.
+#شفق_نيوز #العراق #تلغرام #سوشيال_ميديا #تكنولوجيا
+
+الجيش الإيراني يعلن اشتعال ناقلة نفط ثالثة قرب مضيق هرمز بعد اصطدامها بلغم بحري.
+#شفق_نيوز #إيران #هرمز #النفط #الملاحة
+
+أسعار الدولار ترتفع في بورصتي بغداد وأربيل مع افتتاح تعاملات اليوم.
+#شفق_نيوز #العراق #الدولار #بغداد #أربيل
+
+اكتب الكابشن والهاشتاكات فقط، بدون أي شيء آخر.`;
+  const storyPromptAr = `أنت تكتب نص ستوري إنستغرام لوكالة شفق نيوز العراقية.
+
+العنوان: ${a.title}
+الخبر: ${(a.summary || a.title).slice(0, 2000)}
+
+اكتب نص الستوري بالعربية وفق هذه القواعد:
+- قصير جداً: سطر أو سطران يلخصان الخبر كله، أقل من 100 حرف.
+- واضح وجذاب لكن دقيق. لا تضف معلومات غير موجودة في الخبر.
+- محايد، وانسب التصريحات باختصار ("إيران:"، "الجيش يعلن...").
+- لا تستخدم هذه الكلمات، استخدم البديل: ${avoidRules || "لا شيء"}.
+- بلا عنف. بدون هاشتاكات. بدون إيموجي. بدون علامات تنصيص حول النص.
+
+أمثلة:
+العراق يمهل تلغرام 30 يوماً قبل الحجب
+اشتعال ناقلة نفط ثالثة قرب مضيق هرمز
+الدولار يرتفع في بغداد وأربيل
+
+اكتب نص الستوري فقط، بدون أي شيء آخر.`;
+  const prompt = mode === "story" ? (ar ? storyPromptAr : storyPrompt) : (ar ? postPromptAr : postPrompt);
   const errors = [];
   const started = Date.now();
   for (const model of CAPTION_MODELS) {
@@ -636,7 +725,7 @@ Reply with only the story text, nothing else.`;
       const out = await Promise.race([
         env.AI.run(model, {
           messages: [{ role: "user", content: prompt }],
-          max_tokens: mode === "story" ? 120 : 400,
+          max_tokens: mode === "story" ? (ar ? 200 : 120) : (ar ? 600 : 400),
         }),
         new Promise((_, rej) => setTimeout(() => rej(new Error("took too long")), Math.min(left, 10000))),
       ]);
@@ -655,7 +744,7 @@ Reply with only the story text, nothing else.`;
             .split("\n").map((l) => l.trim().replace(/^["“”']+|["“”']+$/g, "").trim()).filter(Boolean).slice(0, 2).join("\n");
           return { text: story };
         }
-        return { text: fixHashtags(trimToTwoSentences(applyAvoidList(clean, avoid))) };
+        return { text: fixHashtags(trimToTwoSentences(applyAvoidList(clean, avoid)), a.lang) };
       }
       errors.push(`${model.split("/").pop()} sent: ${JSON.stringify(out).slice(0, 150)}`);
     } catch (e) {
@@ -672,7 +761,10 @@ async function handleCaption(env, cq, chatId, h, mode = "post") {
   const a = await env.DB.prepare("SELECT * FROM articles WHERE h = ?").bind(h).first();
   if (!a) return say(env, chatId, "This article is too old for a caption.");
 
-  const wait = await say(env, chatId, mode === "story" ? "📱 Writing story text..." : "✍️ Writing caption...", {
+  const arMsg = a.lang === "ar";
+  const wait = await say(env, chatId, mode === "story"
+    ? (arMsg ? "📱 جاري كتابة الستوري..." : "📱 Writing story text...")
+    : (arMsg ? "✍️ جاري كتابة الكابشن..." : "✍️ Writing caption..."), {
     reply_parameters: { message_id: cq.message.message_id, allow_sending_without_reply: true },
   });
   const r = await makeCaption(env, a, mode);
