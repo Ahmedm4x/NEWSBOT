@@ -73,6 +73,61 @@ const DEFAULT_AVOID = {
   wars: "conflicts",
   escalation: "tensions",
   escalations: "tensions",
+  // more violent / graphic words
+  massacred: "targeted",
+  massacres: "deadly attacks",
+  slaughter: "attack",
+  slaughtered: "targeted",
+  murder: "crime",
+  murdered: "lost their lives",
+  murders: "crimes",
+  "shot dead": "fatally shot",
+  bloodshed: "violence",
+  carnage: "violence",
+  corpses: "victims",
+  corpse: "victim",
+  bombing: "blast",
+  bombings: "blasts",
+  "suicide bomber": "attacker",
+  "suicide bombers": "attackers",
+  "suicide bombing": "attack",
+  "suicide attack": "attack",
+  "car bomb": "explosive-laden vehicle",
+  gunmen: "armed men",
+  terrorist: "militant",
+  terrorists: "militants",
+  "terror attack": "attack",
+  jihadist: "extremist",
+  jihadists: "extremists",
+  martyr: "victim",
+  martyrs: "victims",
+  martyred: "lost their lives",
+  // sensitive / designated group names (longest names are replaced first)
+  "kataib hezbollah": "an armed faction",
+  "kata'ib hezbollah": "an armed faction",
+  "asaib ahl al-haq": "an armed faction",
+  "harakat al-nujaba": "an armed faction",
+  "al-nujaba": "an armed faction",
+  "kataib sayyid al-shuhada": "an armed faction",
+  "isis members": "members of the extremist group",
+  "isis militants": "extremist group militants",
+  "isis fighters": "extremist group fighters",
+  "isis suspects": "extremist group suspects",
+  "isis cell": "extremist cell",
+  "isis remnants": "extremist group remnants",
+  "islamic state": "the extremist group",
+  isis: "the extremist group",
+  isil: "the extremist group",
+  daesh: "the extremist group",
+  "al-qaeda": "the extremist group",
+  hezbollah: "a Lebanese armed group",
+  hamas: "a Palestinian armed group",
+  houthis: "Yemen's armed group",
+  houthi: "Yemeni armed group",
+  ansarallah: "Yemen's armed group",
+  "quds force": "an Iranian force",
+  irgc: "Iran's Revolutionary Guard",
+  pkk: "a Kurdish armed group",
   // Arabic
   "مقتل": "مصرع",
   "قتلى": "ضحايا",
@@ -86,7 +141,65 @@ const DEFAULT_AVOID = {
   "صاروخ باليستي": "صاروخ",
   "تصعيد": "توتر",
   "دماء": "ضحايا",
+  "مجازر": "هجمات",
+  "قتلوا": "لقوا حتفهم",
+  "قتلت": "أودت بحياة",
+  "شهيد": "ضحية",
+  "شهداء": "ضحايا",
+  "استشهد": "لقي حتفه",
+  "استشهاد": "مصرع",
+  "إرهابي": "مسلح",
+  "إرهابيين": "مسلحين",
+  "إرهابيون": "مسلحون",
+  "ارهابي": "مسلح",
+  "ارهابيين": "مسلحين",
+  "انتحاري": "مهاجم",
+  "سيارة مفخخة": "عجلة ملغمة",
+  "جثث": "ضحايا",
+  "جثة": "ضحية",
+  "أشلاء": "ضحايا",
+  "سفك": "عنف",
+  "حرب": "صراع",
+  // group names in Arabic
+  "كتائب حزب الله": "فصيل مسلح",
+  "عصائب أهل الحق": "فصيل مسلح",
+  "حركة النجباء": "فصيل مسلح",
+  "النجباء": "فصيل مسلح",
+  "كتائب سيد الشهداء": "فصيل مسلح",
+  "تنظيم الدولة": "التنظيم المتطرف",
+  "داعش": "التنظيم المتطرف",
+  "القاعدة": "التنظيم المتطرف",
+  "حزب الله": "جماعة لبنانية مسلحة",
+  "حماس": "فصيل فلسطيني",
+  "الحوثيين": "الجماعة اليمنية المسلحة",
+  "الحوثيون": "الجماعة اليمنية المسلحة",
+  "الحوثي": "الجماعة اليمنية المسلحة",
+  "أنصار الله": "الجماعة اليمنية المسلحة",
+  "فيلق القدس": "قوة إيرانية",
+  "الحرس الثوري": "القوات الإيرانية",
+  "العمال الكردستاني": "جماعة كردية مسلحة",
 };
+
+// Group names: safe to swap in the article itself before the AI reads it
+const GROUP_KEYS = new Set(Object.keys(DEFAULT_AVOID).filter((k) =>
+  /faction|extremist|armed group|iranian force|revolutionary guard|فصيل|التنظيم المتطرف|جماعة|الجماعة|قوة إيرانية|القوات الإيرانية/i.test(DEFAULT_AVOID[k])));
+
+// Words that can't be softened safely. If they are still in a caption, the bot warns you to check it.
+const FLAG_WORDS = [
+  "behead", "beheaded", "beheading", "execution", "executions", "executed", "execute", "rape", "raped", "torture", "tortured",
+  "suicide", "genocide", "hostage", "hostages", "kidnapped", "abducted", "child soldiers", "mass grave", "blood", "dead", "kill", "killed",
+  "ذبح", "قطع رأس", "إعدام", "اعدام", "أعدم", "اغتصاب", "تعذيب", "انتحار", "إبادة", "ابادة", "رهائن", "رهينة", "مقبرة جماعية", "قتل", "مقتل", "دماء",
+];
+
+function findFlags(text) {
+  const low = text.toLowerCase();
+  return FLAG_WORDS.filter((w) => {
+    const re = isArabic(w)
+      ? new RegExp(`(^|[^\\p{L}])(?:[وفبل])?(?:ال)?${escRe(w)}(?=$|[^\\p{L}])`, "u")
+      : new RegExp(`(^|[^\\p{L}])${escRe(w)}(?=$|[^\\p{L}])`, "iu");
+    return re.test(low);
+  });
+}
 const isArabic = (s) => /[\u0600-\u06FF]/.test(s);
 // Hashtags never to use (sensitive or designated groups). Keep the name in the text only.
 const BLOCKED_HASHTAGS = ["houthis", "houthi", "irgc", "hezbollah", "hamas", "isis", "daesh", "pkk", "alqaeda", "ansarallah", "kataibhezbollah",
@@ -123,21 +236,31 @@ function applyAvoidList(text, list) {
   let out = text;
   // drop hashtags that contain an avoided word, e.g. #Killed
   for (const bad of Object.keys(list)) {
-    out = out.replace(new RegExp(`\\s?#[\\p{L}\\p{N}_]*${escRe(bad)}[\\p{L}\\p{N}_]*`, "giu"), "");
+    const compact = escRe(bad.replace(/[\s'-]+/g, ""));
+    out = out.replace(new RegExp(`\\s?#[\\p{L}\\p{N}_]*(?:${escRe(bad)}|${compact})[\\p{L}\\p{N}_]*`, "giu"), "");
   }
-  for (const [bad, good] of Object.entries(list)) {
+  const entries = Object.entries(list).sort((a, b) => b[0].length - a[0].length);
+  for (const [bad, good] of entries) {
     if (isArabic(bad)) {
       const reAr = new RegExp(`(^|[^\\p{L}#])((?:[وف])?(?:[بلك])?(?:ال)?)(${escRe(bad)})(?=$|[^\\p{L}])`, "gu");
       out = out.replace(reAr, (all, pre, prefix) => pre + prefix + good);
       continue;
     }
     const re = new RegExp(`(^|[^\\p{L}#])(${escRe(bad)})(?=$|[^\\p{L}])`, "giu");
-    out = out.replace(re, (all, pre, word) => {
-      const rep = word[0] === word[0].toUpperCase() && word[0] !== word[0].toLowerCase()
-        ? good.charAt(0).toUpperCase() + good.slice(1) : good;
+    out = out.replace(re, (all, pre, word, offset, whole) => {
+      const before = whole.slice(0, offset + pre.length);
+      const sentenceStart = /(^|[.!?\n]\s*)$/.test(before);
+      let rep = sentenceStart ? good.charAt(0).toUpperCase() + good.slice(1) : good;
+      // a capital in the original only matters at the start of a sentence
+      if (!sentenceStart && /^(A|An|The) /.test(rep)) rep = rep.charAt(0).toLowerCase() + rep.slice(1);
       return pre + rep;
     });
   }
+  // tidy grammar the swaps can create
+  out = out
+    .replace(/\b(the|a|an)\s+(?=(?:a|an|the)\s)/gi, "")                       // "the an armed faction"
+    .replace(/\b(the)\s+(?=[A-Z][a-z]+'s\b)/gi, "")                           // "the Iran's ..."
+    .replace(/\b([Aa])\s+(?=(?:attack|armed|extremist|explosive|iranian|act)\w*)/g, "$1n ");
   return out;
 }
 const LANG_NAMES = { ar: "العربية", en: "English", both: "العربية + English" };
@@ -624,6 +747,9 @@ async function makeCaption(env, a, mode = "post") {
   if (!env.AI) return { error: "AI is not connected" };
   const avoid = await getAvoidList(env);
   const ar = a.lang === "ar";
+  // clean the article first, so the AI doesn't copy harsh words or group names from it
+  const groupsOnly = Object.fromEntries(Object.entries(avoid).filter(([k]) => GROUP_KEYS.has(k)));
+  a = { ...a, title: applyAvoidList(a.title || "", groupsOnly), summary: applyAvoidList(a.summary || "", groupsOnly) };
   const avoidRules = Object.entries(avoid).filter(([b]) => isArabic(b) === ar).map(([b, g]) => `"${b}" -> "${g}"`).join(", ");
   const postPrompt = `You write Instagram captions for Shafaq News, an Iraqi news agency.
 
@@ -635,7 +761,8 @@ Write the caption with these rules:
 - Safe and trendy, written to do well on Instagram Explore, but always accurate. Never add facts that are not in the article.
 - Keep conditions, deadlines and uncertainty exactly as in the article. A warning or a deadline is not a final decision: write "plans to block unless..." not "will block". "Reports" or "allegations" stay reports or allegations.
 - Neutral news-agency tone, like Reuters or BBC. Attribute claims: "X says", "X claims", "according to X". If the article says a claim could not be verified, keep that.
-- Groups such as the Houthis, IRGC, armed factions: report neutrally, never praise or support them.
+- Never name armed or designated groups (for example Kataib Hezbollah, ISIS, Hezbollah, Hamas, the Houthis, the IRGC, the PKK). Describe them neutrally instead: "an armed faction", "the extremist group". Never praise or support any armed group.
+- Do not mention executions, torture, beheadings, rape, suicide or graphic details. Do not use words like "martyr" or "terrorist".
 - Never use these words. Use the replacement instead and keep the sentence natural: ${avoidRules || "none"}.
 - Calm wording, nothing graphic or violent. No em dashes. No emojis at all.
 - Then ONE new line with exactly 5 hashtags, all on that same line, separated by spaces. The first one must be #Shafaq_news. No underscores in the other hashtags. The other 4 must be short, popular, high-volume hashtags: countries, cities, regions or broad topics, for example #Iraq #Iran #Israel #USA #MiddleEast #Baghdad #Kurdistan #Oil #Economy. No long or made-up compound hashtags like #USIranTensions or #MiddleEastConflict. Never use these hashtags: ${BLOCKED_HASHTAGS.map((h) => "#" + h).join(" ")}.
@@ -661,6 +788,7 @@ Write the story text with these rules:
 - Very short: one or two short lines that sum up the whole article. Under 120 characters in total.
 - Clear and catchy, but accurate. Never add facts that are not in the article. Keep conditions and deadlines as in the article.
 - Neutral tone. Attribute claims briefly ("Iran says", "Army: ...").
+- Never name armed or designated groups (Kataib Hezbollah, ISIS, Hezbollah, Hamas, Houthis, IRGC, PKK). Say "an armed faction" or "the extremist group" instead.
 - Never use these words. Use the replacement instead: ${avoidRules || "none"}.
 - Nothing graphic or violent. No hashtags. No emojis. No em dashes. No quotation marks around the whole text.
 
@@ -680,7 +808,8 @@ Reply with only the story text, nothing else.`;
 - آمن وجذاب ومناسب لظهور المنشور في Explore، لكن دقيق دائماً. لا تضف أي معلومة غير موجودة في الخبر.
 - حافظ على الشروط والمهل وعدم التأكد كما هي في الخبر. التحذير أو المهلة ليس قراراً نهائياً.
 - أسلوب وكالة أنباء محايد. انسب التصريحات لأصحابها: "قال"، "أعلن"، "بحسب"، "زعم".
-- الجماعات مثل الحوثيين والحرس الثوري والفصائل المسلحة: صياغة محايدة، بلا مدح أو دعم.
+- لا تذكر أسماء الجماعات المسلحة أو المصنفة أبداً (مثل كتائب حزب الله، داعش، حزب الله، حماس، الحوثيين، الحرس الثوري، العمال الكردستاني). استخدم وصفاً محايداً بدلاً منها: "فصيل مسلح"، "التنظيم المتطرف". بلا مدح أو دعم لأي جماعة مسلحة.
+- لا تذكر الإعدام أو التعذيب أو الذبح أو الاغتصاب أو الانتحار أو أي تفاصيل قاسية. لا تستخدم كلمات مثل "شهيد" أو "إرهابي".
 - لا تستخدم هذه الكلمات أبداً، استخدم البديل مع الحفاظ على سلاسة الجملة: ${avoidRules || "لا شيء"}.
 - صياغة هادئة بلا عنف أو مشاهد قاسية. بدون إيموجي. بدون شرطة طويلة.
 - ثم سطر واحد جديد فيه 5 هاشتاكات بالعربية بالضبط، كلها في نفس السطر ومفصولة بمسافات. أول هاشتاك يجب أن يكون #شفق_نيوز. البقية قصيرة ومشهورة: دول، مدن، مواضيع عامة، مثل #العراق #بغداد #إيران #النفط #الدولار #اقتصاد #أربيل. لا تستخدم هذه الهاشتاكات أبداً: #الحوثيين #الحرس_الثوري #حزب_الله #حماس #داعش.
@@ -706,6 +835,7 @@ Reply with only the story text, nothing else.`;
 - قصير جداً: سطر أو سطران يلخصان الخبر كله، أقل من 100 حرف.
 - واضح وجذاب لكن دقيق. لا تضف معلومات غير موجودة في الخبر.
 - محايد، وانسب التصريحات باختصار ("إيران:"، "الجيش يعلن...").
+- لا تذكر أسماء الجماعات المسلحة أو المصنفة، قل "فصيل مسلح" أو "التنظيم المتطرف".
 - لا تستخدم هذه الكلمات، استخدم البديل: ${avoidRules || "لا شيء"}.
 - بلا عنف. بدون هاشتاكات. بدون إيموجي. بدون علامات تنصيص حول النص.
 
@@ -742,9 +872,10 @@ Reply with only the story text, nothing else.`;
         if (mode === "story") {
           const story = applyAvoidList(clean, avoid).replace(/#[\p{L}\p{N}_]+/gu, "").replace(/[ \t]{2,}/g, " ")
             .split("\n").map((l) => l.trim().replace(/^["“”']+|["“”']+$/g, "").trim()).filter(Boolean).slice(0, 2).join("\n");
-          return { text: story };
+          return { text: story, flags: findFlags(story) };
         }
-        return { text: fixHashtags(trimToTwoSentences(applyAvoidList(clean, avoid)), a.lang) };
+        const final = fixHashtags(trimToTwoSentences(applyAvoidList(clean, avoid)), a.lang);
+        return { text: final, flags: findFlags(final) };
       }
       errors.push(`${model.split("/").pop()} sent: ${JSON.stringify(out).slice(0, 150)}`);
     } catch (e) {
@@ -782,6 +913,11 @@ async function handleCaption(env, cq, chatId, h, mode = "post") {
     reply_markup = { inline_keyboard: [[{ text: "🔄 Try again", callback_data: prefix + h }]] };
   } else {
     text = `<pre>${esc(r.text)}</pre>`;
+    if (r.flags?.length) {
+      text += arMsg
+        ? `\n\n⚠️ <b>راجع قبل النشر:</b> فيه كلمات حساسة (${esc(r.flags.join("، "))})`
+        : `\n\n⚠️ <b>Check before posting:</b> sensitive words (${esc(r.flags.join(", "))})`;
+    }
     reply_markup = { inline_keyboard: [[
       ...(r.text.length <= 256 ? [{ text: "📋 Copy", copy_text: { text: r.text } }] : []),
       { text: "🔄 Another one", callback_data: prefix + h },
